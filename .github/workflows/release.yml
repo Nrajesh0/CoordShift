@@ -64,6 +64,16 @@ jobs:
             fi
           fi
 
+          # Warn if versionCode was not incremented compared to the previous release tag
+          # (Android & Obtainium require an equal or higher versionCode for in-place updates)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if [ -n "$LAST_TAG" ] && [ "$SHOULD_RELEASE" == "true" ]; then
+            PREV_CODE=$(git show "${LAST_TAG}:app/build.gradle.kts" 2>/dev/null | grep -oE 'versionCode\s*=\s*[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)
+            if [ -n "$PREV_CODE" ] && [ "${VERSION_CODE:-1}" -le "$PREV_CODE" ]; then
+              echo "::warning::versionCode (${VERSION_CODE}) is not greater than previous tag ${LAST_TAG} (${PREV_CODE}). Increment versionCode in app/build.gradle.kts so Obtainium can update cleanly."
+            fi
+          fi
+
           echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
           echo "version_code=${VERSION_CODE:-1}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
@@ -92,7 +102,7 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Prepare signing keystores
+      - name: Prepare consistent signing keystores
         id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -102,6 +112,7 @@ jobs:
           if [ -f "debug.keystore.base64" ]; then
             base64 --decode debug.keystore.base64 > debug.keystore
           else
+            echo "::warning::debug.keystore.base64 not found; generating ephemeral debug keystore (in-place Obtainium updates require a consistent keystore)."
             keytool -genkeypair -v -keystore debug.keystore \
               -storepass android -alias androiddebugkey -keypass android \
               -keyalg RSA -keysize 2048 -validity 10000 \
@@ -111,10 +122,10 @@ jobs:
           if [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
             echo "$KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
             echo "mode=release" >> "$GITHUB_OUTPUT"
-            echo "Release signing keystore decoded."
+            echo "Using persistent Release signing keystore."
           else
             echo "mode=debug" >> "$GITHUB_OUTPUT"
-            echo "Release keystore secrets not set; building installable signed debug APK."
+            echo "Using persistent repo debug.keystore.base64 (consistent signature for Obtainium updates)."
           fi
 
       - name: Run unit tests
@@ -129,15 +140,15 @@ jobs:
         run: |
           gradle :app:assembleRelease :app:bundleRelease --no-daemon
           mkdir -p release-artifacts
-          cp app/build/outputs/apk/release/*.apk "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}-release.apk"
-          cp app/build/outputs/bundle/release/*.aab "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}-release.aab"
+          cp app/build/outputs/apk/release/*.apk "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}.apk"
+          cp app/build/outputs/bundle/release/*.aab "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}.aab"
 
-      - name: Build installable Debug APK (fallback when release secrets are not configured)
+      - name: Build consistently signed APK (Obtainium-ready)
         if: steps.signing.outputs.mode == 'debug'
         run: |
           gradle :app:assembleDebug --no-daemon
           mkdir -p release-artifacts
-          cp app/build/outputs/apk/debug/*.apk "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}-debug.apk"
+          cp app/build/outputs/apk/debug/*.apk "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}.apk"
 
       - name: Generate SHA-256 checksums
         run: |
@@ -149,14 +160,17 @@ jobs:
         with:
           tag_name: ${{ needs.check-version.outputs.release_tag }}
           name: CoordShift ${{ needs.check-version.outputs.release_tag }}
-          generate_release_notes: true
+          draft: false
+          prerelease: false
           make_latest: true
+          generate_release_notes: true
           body: |
             ### CoordShift ${{ needs.check-version.outputs.release_tag }} (Build ${{ needs.check-version.outputs.version_code }})
 
-            - **Build type:** `${{ steps.signing.outputs.mode }}`
+            - **Version:** `${{ needs.check-version.outputs.version_name }}` (`versionCode ${{ needs.check-version.outputs.version_code }}`)
+            - **Signing:** `${{ steps.signing.outputs.mode }}` (consistent key for in-place Obtainium updates)
             - **Commit:** `${{ github.sha }}`
 
-            Download the `.apk` asset below to install on Android.
+            Install or update directly via **Obtainium** using this repository URL, or download `CoordShift-${{ needs.check-version.outputs.release_tag }}.apk` below.
           files: |
             release-artifacts/*
