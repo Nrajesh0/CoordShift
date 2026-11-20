@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer subtle precision compass ring within 66dp safe zone -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,24 A30,30 0 1,1 53.99,24 Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#38BDF8" />
+    <!-- Cardinal reticle ticks -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M52.5,19h3v7h-3z M52.5,82h3v7h-3z M19,52.5h7v3h-7z M82,52.5h7v3h-7z" />
+    <!-- Bold emerald GPS anchor pin silhouette -->
+    <path
+        android:fillColor="#10E5A1"
+        android:pathData="M54,32C44.61,32 37,39.61 37,49C37,61.75 54,77 54,77C54,77 71,61.75 71,49C71,39.61 63.39,32 54,32ZM54,55.5C50.41,55.5 47.5,52.59 47.5,49C47.5,45.41 50.41,42.5 54,42.5C57.59,42.5 60.5,45.41 60.5,49C60.5,52.59 57.59,55.5 54,55.5Z" />
+</vector>

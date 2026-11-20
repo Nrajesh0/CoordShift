@@ -1,0 +1,6 @@
+{
+  "name": "CoordShift",
+  "description": "Minimal GPS coordinate comparator and cooldown calculator with drag-to-swap anchor, multi-hop route optimizer, live countdown timer, and distance reference chart.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

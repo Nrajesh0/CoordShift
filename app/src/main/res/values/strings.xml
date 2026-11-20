@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CoordShift</string>
+    <string name="nav_compare">Compare</string>
+    <string name="nav_route">Radar</string>
+    <string name="nav_timer">Timer</string>
+    <string name="nav_chart">Chart</string>
+
+    <string name="input_placeholder">Paste lat, lng or map link…</string>
+    <string name="action_paste">Paste</string>
+    <string name="action_add">Add</string>
+    <string name="action_sort_fastest">Fastest</string>
+    <string name="action_clear_all">Clear</string>
+    <string name="action_load_demo">Load 3 sample coords</string>
+    <string name="action_set_current">Set as current anchor</string>
+    <string name="action_copy_coords">Copy coordinates</string>
+    <string name="action_edit_label">Edit label</string>
+    <string name="action_delete_coord">Remove coordinate</string>
+    <string name="action_drag_reorder">Drag to reorder or drop at top to set current</string>
+    <string name="action_start_timer">Start cooldown timer</string>
+
+    <string name="badge_current">CURRENT ANCHOR</string>
+    <string name="badge_best">BEST · FASTEST</string>
+    <string name="badge_ready">READY NOW</string>
+
+    <string name="empty_title">Drop GPS coordinates to compare</string>
+    <string name="empty_subtitle">Paste one or multiple lines (lat, lng, DMS, or map URLs). The top slot is your Current Anchor — drag any card to the top to switch.</string>
+
+    <string name="error_no_valid_coords">No valid GPS coordinates found. Try format: 35.6762, 139.6503</string>
+    <string name="error_clipboard_empty">Clipboard is empty</string>
+</resources>

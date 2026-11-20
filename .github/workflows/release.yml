@@ -1,0 +1,162 @@
+name: Build & Release Android App
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force publish/update release even if tag already exists'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-version:
+    name: Detect Version Bump
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.detect.outputs.should_release }}
+      version_name: ${{ steps.detect.outputs.version_name }}
+      version_code: ${{ steps.detect.outputs.version_code }}
+      release_tag: ${{ steps.detect.outputs.release_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check versionName and tag status
+        id: detect
+        run: |
+          VERSION_NAME=$(grep -oE 'versionName\s*=\s*"[^"]+"' app/build.gradle.kts | head -n1 | sed -E 's/.*"([^"]+)"/\1/')
+          VERSION_CODE=$(grep -oE 'versionCode\s*=\s*[0-9]+' app/build.gradle.kts | head -n1 | grep -oE '[0-9]+')
+
+          if [ -z "$VERSION_NAME" ]; then
+            echo "::error::Could not parse versionName from app/build.gradle.kts"
+            exit 1
+          fi
+
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            RELEASE_TAG="${{ github.ref_name }}"
+            SHOULD_RELEASE="true"
+          else
+            RELEASE_TAG="v${VERSION_NAME}"
+            if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ inputs.force_release }}" == "true" ]; then
+              SHOULD_RELEASE="true"
+            elif git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
+              echo "Tag ${RELEASE_TAG} already exists. Bump versionName in app/build.gradle.kts to publish a new release."
+              SHOULD_RELEASE="false"
+            else
+              echo "Detected new version bump: ${RELEASE_TAG} (versionCode ${VERSION_CODE})"
+              SHOULD_RELEASE="true"
+            fi
+          fi
+
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE:-1}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "should_release=${SHOULD_RELEASE}" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    name: Build APK & Publish Release
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Prepare signing keystores
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -f "debug.keystore.base64" ]; then
+            base64 --decode debug.keystore.base64 > debug.keystore
+          else
+            keytool -genkeypair -v -keystore debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "Release signing keystore decoded."
+          else
+            echo "mode=debug" >> "$GITHUB_OUTPUT"
+            echo "Release keystore secrets not set; building installable signed debug APK."
+          fi
+
+      - name: Run unit tests
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Build signed Release APK & AAB
+        if: steps.signing.outputs.mode == 'release'
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          gradle :app:assembleRelease :app:bundleRelease --no-daemon
+          mkdir -p release-artifacts
+          cp app/build/outputs/apk/release/*.apk "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}-release.apk"
+          cp app/build/outputs/bundle/release/*.aab "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}-release.aab"
+
+      - name: Build installable Debug APK (fallback when release secrets are not configured)
+        if: steps.signing.outputs.mode == 'debug'
+        run: |
+          gradle :app:assembleDebug --no-daemon
+          mkdir -p release-artifacts
+          cp app/build/outputs/apk/debug/*.apk "release-artifacts/CoordShift-${{ needs.check-version.outputs.release_tag }}-debug.apk"
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd release-artifacts
+          sha256sum * > checksums-sha256.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-version.outputs.release_tag }}
+          name: CoordShift ${{ needs.check-version.outputs.release_tag }}
+          generate_release_notes: true
+          make_latest: true
+          body: |
+            ### CoordShift ${{ needs.check-version.outputs.release_tag }} (Build ${{ needs.check-version.outputs.version_code }})
+
+            - **Build type:** `${{ steps.signing.outputs.mode }}`
+            - **Commit:** `${{ github.sha }}`
+
+            Download the `.apk` asset below to install on Android.
+          files: |
+            release-artifacts/*
