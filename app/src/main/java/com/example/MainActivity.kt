@@ -1,15 +1,19 @@
 package com.example
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color as AndroidColor
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -20,9 +24,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -62,6 +68,7 @@ import com.example.data.AppTab
 import com.example.data.CoordPoint
 import com.example.data.ThemeMode
 import com.example.domain.CooldownCalculator
+import com.example.notifications.CooldownNotificationManager
 import com.example.ui.components.CoordShiftFooterBar
 import com.example.ui.components.CoordShiftNavigationRail
 import com.example.ui.screens.ChartScreen
@@ -109,6 +116,27 @@ fun CoordShiftApp(
     val scope = rememberCoroutineScope()
     val autoDismissJob = remember { arrayOf<Job?>(null) }
     var showNotificationCenter by remember { mutableStateOf(false) }
+    var promptedNotifPermission by remember { mutableStateOf(false) }
+
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.syncNotificationsForCurrentState()
+        }
+    }
+
+    LaunchedEffect(uiState.timerState.isRunning, uiState.notificationPrefs.masterEnabled) {
+        if (uiState.timerState.isRunning &&
+            uiState.notificationPrefs.masterEnabled &&
+            !promptedNotifPermission &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !CooldownNotificationManager.hasNotificationPermission(context)
+        ) {
+            promptedNotifPermission = true
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     val isDark = when (uiState.themeMode) {
         ThemeMode.DARK -> true
@@ -200,10 +228,16 @@ fun CoordShiftApp(
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val useNavigationRail = maxWidth >= 720.dp
 
+            val showBottomBar = !useNavigationRail && !showNotificationCenter
+
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
                 containerColor = MaterialTheme.colorScheme.background,
-                contentWindowInsets = WindowInsets.statusBars,
+                contentWindowInsets = if (showBottomBar) {
+                    WindowInsets.statusBars
+                } else {
+                    WindowInsets.statusBars.union(WindowInsets.navigationBars)
+                },
                 snackbarHost = {
                     SnackbarHost(hostState = snackbarHostState) { data ->
                         SwipeableMinimalToast(data = data)
@@ -322,6 +356,7 @@ fun CoordShiftApp(
                                 onOpenTimerTab = { viewModel.selectTab(AppTab.TIMER) },
                                 onOpenNotificationCenter = { showNotificationCenter = true },
                                 onToggleTimerPauseResume = viewModel::toggleTimerPauseResume,
+                                onDismissTimer = viewModel::resetTimer,
                                 onShowMessage = { msg -> showMessage(msg) }
                             )
 
@@ -441,13 +476,13 @@ private fun SwipeableMinimalToast(data: SnackbarData) {
                 }
                 IconButton(
                     onClick = { data.dismiss() },
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(44.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Close,
                         contentDescription = "Dismiss notification",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }

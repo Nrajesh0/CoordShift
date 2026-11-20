@@ -68,4 +68,19 @@ class ExampleUnitTest {
         assertEquals("New York, US", PlaceNameResolver.lookupOfflineCity(40.7128, -74.0060))
         assertNull(PlaceNameResolver.lookupOfflineCity(0.0, -160.0))
     }
+
+    @Test
+    fun coordinateParserPrefersGoogleMapsPinOverViewportAndHandlesCurlyDms() {
+        val gmapsUrl = "https://www.google.com/maps/place/Tokyo+Tower/@35.6500,139.7400,15z/data=!3m1!4b1!4m6!3m5!1s0x0:0x0!8m2!3d35.6585805!4d139.7454329"
+        val pinParsed = CoordinateParser.parseAll(gmapsUrl)
+        assertEquals(1, pinParsed.size)
+        assertEquals(35.6585805, pinParsed[0].latitude, 1e-5)
+        assertEquals(139.7454329, pinParsed[0].longitude, 1e-5)
+
+        val curlyDms = "35°40’34.3”N 139°39’01.1”E"
+        val dmsParsed = CoordinateParser.parseAll(curlyDms)
+        assertEquals(1, dmsParsed.size)
+        assertTrue(dmsParsed[0].latitude in 35.67..35.68)
+        assertTrue(dmsParsed[0].longitude in 139.65..139.66)
+    }
 }

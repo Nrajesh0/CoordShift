@@ -42,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
@@ -144,6 +145,7 @@ fun CompareScreen(
     onOpenTimerTab: () -> Unit,
     onOpenNotificationCenter: () -> Unit,
     onToggleTimerPauseResume: () -> Unit,
+    onDismissTimer: () -> Unit,
     onShowMessage: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -374,6 +376,7 @@ fun CompareScreen(
                         },
                         onOpenTimerTab = onOpenTimerTab,
                         onToggleTimerPauseResume = onToggleTimerPauseResume,
+                        onDismissTimer = onDismissTimer,
                         onReturnHome = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onSwitchToPermanent(true)
@@ -796,6 +799,7 @@ private fun HeroNowCard(
     onPinAnchorAsHome: () -> Unit,
     onOpenTimerTab: () -> Unit,
     onToggleTimerPauseResume: () -> Unit,
+    onDismissTimer: () -> Unit,
     onReturnHome: () -> Unit,
     onClearLastLocation: () -> Unit,
     modifier: Modifier = Modifier
@@ -954,25 +958,25 @@ private fun HeroNowCard(
                         if (!anchor.isPermanent && perm == null) {
                             IconButton(
                                 onClick = onPinAnchorAsHome,
-                                modifier = Modifier.size(34.dp)
+                                modifier = Modifier.size(44.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Filled.PushPin,
                                     contentDescription = "Save as Permanent Home",
                                     tint = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
                         IconButton(
                             onClick = onEditAnchor,
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Edit,
                                 contentDescription = "Edit current location",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -1065,7 +1069,7 @@ private fun HeroNowCard(
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Box(
                                     modifier = Modifier
-                                        .size(34.dp)
+                                        .size(44.dp)
                                         .clip(CircleShape)
                                         .background(tAccent.copy(alpha = 0.16f))
                                         .clickable(onClick = onToggleTimerPauseResume),
@@ -1075,7 +1079,7 @@ private fun HeroNowCard(
                                         imageVector = if (timer.isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                         contentDescription = if (timer.isRunning) "Pause timer" else "Resume timer",
                                         tint = tAccent,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
@@ -1095,6 +1099,57 @@ private fun HeroNowCard(
                                     .background(tAccent)
                             )
                         }
+                    }
+                }
+            } else if (timer.isFinished) {
+                Surface(
+                    onClick = onDismissTimer,
+                    shape = RoundedCornerShape(14.dp),
+                    color = palette.fastContainer.copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, palette.fast.copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("completed_timer_mini_bar")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = palette.fast,
+                                modifier = Modifier.size(19.dp)
+                            )
+                            Spacer(modifier = Modifier.width(9.dp))
+                            Column {
+                                Text(
+                                    text = "COOLDOWN COMPLETE",
+                                    style = MonoStyles.badge,
+                                    color = palette.fast
+                                )
+                                Text(
+                                    text = "${timer.label.ifBlank { "Spot" }} is safe to act now",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Dismiss",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = palette.fast
+                        )
                     }
                 }
             }
@@ -1186,13 +1241,13 @@ private fun HeroNowCard(
                     )
                     IconButton(
                         onClick = onClearLastLocation,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Close,
                             contentDescription = "Clear last spot",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }

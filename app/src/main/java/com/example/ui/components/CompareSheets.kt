@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -120,14 +121,18 @@ fun CompareOptionsSheet(
                                     .weight(1f)
                                     .minimumInteractiveComponentSize()
                             ) {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                    ),
-                                    color = if (isSelected) palette.fast else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 11.dp)
-                                )
+                                Box(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 11.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                        ),
+                                        color = if (isSelected) palette.fast else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
                         }
                     }
@@ -142,7 +147,7 @@ fun CompareOptionsSheet(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Column(
-                    modifier = Modifier.weight(1.4f),
+                    modifier = Modifier.weight(1.8f),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
@@ -151,7 +156,7 @@ fun CompareOptionsSheet(
                         color = palette.mutedText
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf(0, 1, 2).forEach { mins ->
+                        listOf(0, 1, 2, 3).forEach { mins ->
                             val selected = safetyBufferMinutes == mins
                             Surface(
                                 onClick = { onSetSafetyBuffer(mins) },
@@ -165,21 +170,25 @@ fun CompareOptionsSheet(
                                     .weight(1f)
                                     .minimumInteractiveComponentSize()
                             ) {
-                                Text(
-                                    text = "+${mins}m",
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                    ),
-                                    color = if (selected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 11.dp)
-                                )
+                                Box(
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 11.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (mins == 0) "0m" else "+${mins}m",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                        ),
+                                        color = if (selected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
                 Column(
-                    modifier = Modifier.weight(0.9f),
+                    modifier = Modifier.weight(0.7f),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
@@ -197,12 +206,16 @@ fun CompareOptionsSheet(
                             .minimumInteractiveComponentSize()
                             .testTag("unit_toggle_chip")
                     ) {
-                        Text(
-                            text = if (distanceUnit == DistanceUnit.KM) "KM" else "MI",
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp)
-                        )
+                        Box(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 11.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (distanceUnit == DistanceUnit.KM) "KM" else "MI",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                 }
             }

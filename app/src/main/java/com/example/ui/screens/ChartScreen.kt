@@ -416,9 +416,9 @@ private fun ChartCellPair(
                     Modifier
                         .background(palette.fastContainer)
                         .border(1.dp, palette.fast.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 5.dp, vertical = 4.dp)
+                        .padding(horizontal = 5.dp, vertical = 7.dp)
                 } else {
-                    Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                    Modifier.padding(horizontal = 4.dp, vertical = 7.dp)
                 }
             ),
         horizontalArrangement = Arrangement.SpaceBetween,

@@ -33,8 +33,8 @@ import com.example.domain.CooldownCalculator
 object CooldownNotificationManager {
 
     const val CHANNEL_LIVE = "coordshift_live_countdown_v1"
-    const val CHANNEL_ALERT_SOUND = "coordshift_alert_sound_v1"
-    const val CHANNEL_ALERT_VIBRATE = "coordshift_alert_vibrate_v1"
+    const val CHANNEL_ALERT_SOUND = "coordshift_alert_sound_v2"
+    const val CHANNEL_ALERT_VIBRATE = "coordshift_alert_vibrate_v2"
     const val CHANNEL_ALERT_SILENT = "coordshift_alert_silent_v1"
 
     const val NOTIF_ID_LIVE = 4101
@@ -54,6 +54,44 @@ object CooldownNotificationManager {
     const val EXTRA_LABEL = "extra_label"
     const val EXTRA_PRE_MIN = "extra_pre_min"
     const val EXTRA_RETURN_TEXT = "extra_return_text"
+    const val EXTRA_TARGET_EPOCH = "extra_target_epoch"
+
+    private const val DEDUP_PREFS_NAME = "coordshift_notif_dedup"
+    private const val KEY_LAST_PRE_EPOCH = "last_pre_epoch"
+    private const val KEY_LAST_READY_EPOCH = "last_ready_epoch"
+
+    private val dedupLock = Any()
+
+    /**
+     * Atomically marks [targetEndEpochMillis] as delivered for pre-alert or ready-alert.
+     * Returns true if this caller should deliver the notification, or false if already delivered
+     * (prevents duplicate alerts when foreground ticker and AlarmManager fire concurrently).
+     */
+    fun claimDeliverySlot(
+        context: Context,
+        isPreAlert: Boolean,
+        targetEndEpochMillis: Long
+    ): Boolean {
+        if (targetEndEpochMillis <= 0L) return true
+        synchronized(dedupLock) {
+            val sp = context.applicationContext.getSharedPreferences(DEDUP_PREFS_NAME, Context.MODE_PRIVATE)
+            val key = if (isPreAlert) KEY_LAST_PRE_EPOCH else KEY_LAST_READY_EPOCH
+            val previous = sp.getLong(key, -1L)
+            if (previous == targetEndEpochMillis) return false
+            sp.edit().putLong(key, targetEndEpochMillis).apply()
+            return true
+        }
+    }
+
+    fun clearDeliverySlots(context: Context) {
+        synchronized(dedupLock) {
+            context.applicationContext
+                .getSharedPreferences(DEDUP_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .apply()
+        }
+    }
 
     fun hasNotificationPermission(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -87,14 +125,15 @@ object CooldownNotificationManager {
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
+        // Vibration is handled precisely by triggerCustomVibration() so user's chosen Short/Double/Urgent
+        // waveform plays cleanly without double-buzzing on Android O+.
         val soundChannel = NotificationChannel(
             CHANNEL_ALERT_SOUND,
             "Cooldown Alerts (Sound + Vibrate)",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "High-priority alerts with sound and vibration when cooldown is ready"
-            enableVibration(true)
-            vibrationPattern = VibrationPattern.DOUBLE.timings
+            description = "High-priority alerts with sound and customizable vibration when cooldown is ready"
+            enableVibration(false)
             setSound(defaultSound, audioAttrs)
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
@@ -104,9 +143,8 @@ object CooldownNotificationManager {
             "Cooldown Alerts (Vibrate Only)",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "Silent ringtone alerts with vibration when cooldown is ready"
-            enableVibration(true)
-            vibrationPattern = VibrationPattern.DOUBLE.timings
+            description = "Silent ringtone alerts with customizable vibration when cooldown is ready"
+            enableVibration(false)
             setSound(null, null)
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
@@ -200,9 +238,9 @@ object CooldownNotificationManager {
         val body = bodyParts.joinToString(" · ").ifBlank { "Cooldown timer active" }
 
         val openAppIntent = createOpenAppPendingIntent(context, 6001)
-        val pauseResumeIntent = createActionPendingIntent(context, ACTION_PAUSE_RESUME, 6002)
-        val addMinIntent = createActionPendingIntent(context, ACTION_ADD_ONE_MIN, 6003)
-        val stopIntent = createActionPendingIntent(context, ACTION_STOP_TIMER, 6004)
+        val pauseResumeIntent = createActionPendingIntent(context, ACTION_PAUSE_RESUME, 6002, returnHomeSummary)
+        val addMinIntent = createActionPendingIntent(context, ACTION_ADD_ONE_MIN, 6003, returnHomeSummary)
+        val stopIntent = createActionPendingIntent(context, ACTION_STOP_TIMER, 6004, null)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_LIVE)
             .setSmallIcon(R.drawable.ic_notif_timer)
@@ -261,7 +299,8 @@ object CooldownNotificationManager {
                 requestCode = REQ_ALARM_PRE,
                 label = spotLabel,
                 preMinutes = prefs.preAlertMinutes,
-                returnText = returnHomeSummary
+                returnText = returnHomeSummary,
+                targetEpoch = endMillis
             )
             setAlarmSafely(am, preTriggerMs, prePi)
         } else {
@@ -276,7 +315,8 @@ object CooldownNotificationManager {
                 requestCode = REQ_ALARM_READY,
                 label = spotLabel,
                 preMinutes = 0,
-                returnText = returnHomeSummary
+                returnText = returnHomeSummary,
+                targetEpoch = endMillis
             )
             setAlarmSafely(am, endMillis, readyPi)
         } else {
@@ -321,9 +361,13 @@ object CooldownNotificationManager {
         context: Context,
         label: String,
         minutesLeft: Int,
-        prefs: NotificationPreferences
+        prefs: NotificationPreferences,
+        targetEndEpochMillis: Long = 0L
     ): Boolean {
         if (!prefs.masterEnabled || !hasNotificationPermission(context)) return false
+        if (!claimDeliverySlot(context, isPreAlert = true, targetEndEpochMillis = targetEndEpochMillis)) {
+            return false
+        }
         ensureChannels(context)
         val spot = label.ifBlank { "Cooldown" }
         val title = "${minutesLeft}m left · $spot"
@@ -336,10 +380,14 @@ object CooldownNotificationManager {
         context: Context,
         label: String,
         prefs: NotificationPreferences,
-        returnHomeSummary: String? = null
+        returnHomeSummary: String? = null,
+        targetEndEpochMillis: Long = 0L
     ): Boolean {
         cancelNotification(context, NOTIF_ID_LIVE)
         if (!prefs.masterEnabled || !prefs.readyAlertEnabled || !hasNotificationPermission(context)) {
+            return false
+        }
+        if (!claimDeliverySlot(context, isPreAlert = false, targetEndEpochMillis = targetEndEpochMillis)) {
             return false
         }
         ensureChannels(context)
@@ -371,6 +419,10 @@ object CooldownNotificationManager {
             prefs = prefs
         )
         return true
+    }
+
+    fun previewVibrationPattern(context: Context, pattern: VibrationPattern) {
+        triggerCustomVibration(context, pattern, respectDnd = false)
     }
 
     private fun postAlert(
@@ -406,7 +458,7 @@ object CooldownNotificationManager {
 
         if (prefs.alertStyle != NotificationAlertStyle.SILENT) {
             builder.setVibrate(prefs.vibrationPattern.timings)
-            triggerCustomVibration(context, prefs.vibrationPattern)
+            triggerCustomVibration(context, prefs.vibrationPattern, respectDnd = true)
         } else {
             builder.setSilent(true)
         }
@@ -416,8 +468,21 @@ object CooldownNotificationManager {
         }
     }
 
-    private fun triggerCustomVibration(context: Context, pattern: VibrationPattern) {
+    private fun triggerCustomVibration(
+        context: Context,
+        pattern: VibrationPattern,
+        respectDnd: Boolean
+    ) {
         runCatching {
+            if (respectDnd) {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                val filter = nm?.currentInterruptionFilter ?: NotificationManager.INTERRUPTION_FILTER_ALL
+                if (filter != NotificationManager.INTERRUPTION_FILTER_ALL &&
+                    filter != NotificationManager.INTERRUPTION_FILTER_UNKNOWN
+                ) {
+                    return
+                }
+            }
             val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
                 vm?.defaultVibrator
@@ -451,10 +516,14 @@ object CooldownNotificationManager {
     private fun createActionPendingIntent(
         context: Context,
         action: String,
-        requestCode: Int
+        requestCode: Int,
+        returnText: String?
     ): PendingIntent {
         val intent = Intent(context, CooldownNotificationReceiver::class.java).apply {
             this.action = action
+            if (!returnText.isNullOrBlank()) {
+                putExtra(EXTRA_RETURN_TEXT, returnText)
+            }
         }
         return PendingIntent.getBroadcast(
             context,
@@ -470,13 +539,15 @@ object CooldownNotificationManager {
         requestCode: Int,
         label: String,
         preMinutes: Int,
-        returnText: String?
+        returnText: String?,
+        targetEpoch: Long
     ): PendingIntent {
         val intent = Intent(context, CooldownNotificationReceiver::class.java).apply {
             this.action = action
             putExtra(EXTRA_LABEL, label)
             putExtra(EXTRA_PRE_MIN, preMinutes)
             putExtra(EXTRA_RETURN_TEXT, returnText)
+            putExtra(EXTRA_TARGET_EPOCH, targetEpoch)
         }
         return PendingIntent.getBroadcast(
             context,

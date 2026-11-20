@@ -519,11 +519,22 @@ private fun SpatialRadarCard(
                             modifier = Modifier.weight(1f)
                         ) {
                             if (cand.isPermanent) {
-                                Icon(
-                                    imageVector = Icons.Filled.Home,
-                                    contentDescription = "Permanent Base",
-                                    tint = permColor,
-                                    modifier = Modifier.size(16.dp)
+                                Box(
+                                    modifier = Modifier.width(34.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Home,
+                                        contentDescription = "Permanent Base",
+                                        tint = permColor,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(permColor)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                             } else {
@@ -550,10 +561,15 @@ private fun SpatialRadarCard(
                             )
                         }
                         Spacer(modifier = Modifier.width(8.dp))
+                        val waitText = if (cand.remainingCooldownSeconds == 0) {
+                            "Ready"
+                        } else {
+                            CooldownCalculator.formatCooldown(cand.remainingCooldownSeconds)
+                        }
                         Text(
                             text = "${cand.cardinalDirection} · ${
                                 CooldownCalculator.formatDistance(cand.distanceKm, distanceUnit)
-                            } · ${CooldownCalculator.formatCooldown(cand.remainingCooldownSeconds)}",
+                            } · $waitText",
                             style = MaterialTheme.typography.labelSmall,
                             color = accent
                         )

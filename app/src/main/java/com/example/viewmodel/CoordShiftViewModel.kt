@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import kotlin.math.abs
 
@@ -39,12 +41,29 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
 
     private var lastPreAlertTargetEpoch: Long = 0L
     private var lastReadyAlertTargetEpoch: Long = 0L
+    private val recentLocalTimers = ArrayDeque<TimerState>()
+    private val workspacePersistMutex = Mutex()
+    private val timerPersistMutex = Mutex()
+
+    private fun persistTimerState(timer: TimerState) {
+        if (recentLocalTimers.size >= 8) {
+            recentLocalTimers.removeFirst()
+        }
+        recentLocalTimers.addLast(timer)
+        viewModelScope.launch {
+            timerPersistMutex.withLock {
+                repository.saveTimerState(_uiState.value.timerState)
+            }
+        }
+    }
 
     init {
         CooldownNotificationManager.ensureChannels(application.applicationContext)
 
         viewModelScope.launch {
             val session = repository.sessionFlow.first()
+            var lastObservedDiskTimer = session.timerState
+            var lastObservedDiskLog = session.notificationLog
             val now = System.currentTimeMillis()
             val sanitizedTimer = if (session.timerState.isRunning &&
                 session.timerState.remainingSeconds(now) <= 0
@@ -53,31 +72,67 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             } else {
                 session.timerState
             }
-            val initialList = session.permanentCoord?.let { listOf(it) } ?: emptyList()
+            val restoredCoords = buildList {
+                if (session.activeCoordinates.isNotEmpty()) {
+                    addAll(session.activeCoordinates)
+                    if (session.permanentCoord != null && none { it.id == session.permanentCoord.id }) {
+                        add(session.permanentCoord)
+                    }
+                } else if (session.permanentCoord != null) {
+                    add(session.permanentCoord)
+                }
+            }
+            val restoredLast = session.lastLocationCoord?.takeIf { last ->
+                restoredCoords.any { it.id == last.id } && last.id != session.permanentCoord?.id
+            }
             _uiState.update { current ->
+                val hasInMemoryWorkspace = current.coordinates.isNotEmpty() || current.permanentCoord != null
+                val hasInMemoryTimer = current.timerState.isActive || current.timerState.isFinished
                 recomputeState(
                     current.copy(
-                        permanentCoord = session.permanentCoord,
-                        coordinates = initialList,
+                        permanentCoord = if (hasInMemoryWorkspace) current.permanentCoord else session.permanentCoord,
+                        coordinates = if (hasInMemoryWorkspace) current.coordinates else restoredCoords,
+                        lastLocationCoord = if (hasInMemoryWorkspace) current.lastLocationCoord else restoredLast,
                         distanceUnit = session.distanceUnit,
                         themeMode = session.themeMode,
                         safetyBufferMinutes = session.safetyBufferMinutes,
-                        lastActionEpochMillis = session.lastActionEpochMillis,
-                        timerState = sanitizedTimer,
+                        lastActionEpochMillis = current.lastActionEpochMillis ?: session.lastActionEpochMillis,
+                        timerState = if (hasInMemoryTimer) current.timerState else sanitizedTimer,
                         notificationPrefs = session.notificationPrefs,
+                        notificationLog = if (current.notificationLog.isNotEmpty()) {
+                            current.notificationLog
+                        } else {
+                            session.notificationLog
+                        },
                         nowEpochMillis = now
                     )
                 )
             }
             syncNotificationsForCurrentState()
 
-            // Observe timer updates triggered from notification shade quick actions (Pause / +1m / Stop)
+            // Observe timer & alert log updates triggered externally (notification shade actions or background alarms)
             repository.sessionFlow.drop(1).collect { updatedSession ->
-                val currentTimer = _uiState.value.timerState
-                if (updatedSession.timerState != currentTimer) {
+                val diskTimer = updatedSession.timerState
+                val externalTimerUpdate = if (diskTimer != lastObservedDiskTimer) {
+                    lastObservedDiskTimer = diskTimer
+                    !recentLocalTimers.remove(diskTimer)
+                } else {
+                    false
+                }
+
+                val diskLog = updatedSession.notificationLog
+                val logUpdated = if (diskLog != lastObservedDiskLog) {
+                    lastObservedDiskLog = diskLog
+                    diskLog != _uiState.value.notificationLog
+                } else {
+                    false
+                }
+
+                if (externalTimerUpdate || logUpdated) {
                     _uiState.update { current ->
                         current.copy(
-                            timerState = updatedSession.timerState,
+                            timerState = if (externalTimerUpdate) diskTimer else current.timerState,
+                            notificationLog = if (logUpdated) diskLog else current.notificationLog,
                             nowEpochMillis = System.currentTimeMillis()
                         )
                     }
@@ -90,8 +145,8 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             while (true) {
                 delay(1000L)
                 val now = System.currentTimeMillis()
-                var preAlertToFire: Pair<String, Int>? = null
-                var readyAlertToFire: Triple<String, NotificationPreferences, String?>? = null
+                var preAlertToFire: Triple<String, Int, Long>? = null
+                var readyAlertToFire: Pair<Triple<String, NotificationPreferences, String?>, Long>? = null
 
                 _uiState.update { current ->
                     val timer = current.timerState
@@ -105,7 +160,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                             lastPreAlertTargetEpoch != timer.targetEndEpochMillis
                         ) {
                             lastPreAlertTargetEpoch = timer.targetEndEpochMillis
-                            preAlertToFire = timer.label to np.preAlertMinutes
+                            preAlertToFire = Triple(timer.label, np.preAlertMinutes, timer.targetEndEpochMillis)
                         }
                     }
 
@@ -120,9 +175,9 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                                 timer.label,
                                 np,
                                 buildReturnHomeSummary(current)
-                            )
+                            ) to timer.targetEndEpochMillis
                         }
-                        viewModelScope.launch { repository.saveTimerState(finished) }
+                        persistTimerState(finished)
                         finished
                     } else {
                         timer
@@ -136,33 +191,40 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                     )
                 }
 
-                preAlertToFire?.let { (label, mins) ->
+                preAlertToFire?.let { (label, mins, targetEpoch) ->
                     val prefs = _uiState.value.notificationPrefs
-                    CooldownNotificationManager.firePreAlertNotification(
+                    val delivered = CooldownNotificationManager.firePreAlertNotification(
                         context = getApplication(),
                         label = label,
                         minutesLeft = mins,
-                        prefs = prefs
+                        prefs = prefs,
+                        targetEndEpochMillis = targetEpoch
                     )
-                    appendNotificationLog(
-                        title = "${mins}m left · ${label.ifBlank { "Cooldown" }}",
-                        body = "Early heads-up alert triggered",
-                        isPreAlert = true
-                    )
+                    if (delivered) {
+                        appendNotificationLog(
+                            title = "${mins}m left · ${label.ifBlank { "Cooldown" }}",
+                            body = "Early heads-up alert triggered",
+                            isPreAlert = true
+                        )
+                    }
                 }
 
-                readyAlertToFire?.let { (label, prefs, returnSummary) ->
-                    CooldownNotificationManager.fireReadyAlertNotification(
+                readyAlertToFire?.let { (payload, targetEpoch) ->
+                    val (label, prefs, returnSummary) = payload
+                    val delivered = CooldownNotificationManager.fireReadyAlertNotification(
                         context = getApplication(),
                         label = label,
                         prefs = prefs,
-                        returnHomeSummary = returnSummary
+                        returnHomeSummary = returnSummary,
+                        targetEndEpochMillis = targetEpoch
                     )
-                    appendNotificationLog(
-                        title = "Ready · ${label.ifBlank { "Cooldown" }}",
-                        body = prefs.customReadyMessage.ifBlank { "Cooldown complete — safe to act now!" },
-                        isPreAlert = false
-                    )
+                    if (delivered) {
+                        appendNotificationLog(
+                            title = "Ready · ${label.ifBlank { "Cooldown" }}",
+                            body = prefs.customReadyMessage.ifBlank { "Cooldown complete — safe to act now!" },
+                            isPreAlert = false
+                        )
+                    }
                 }
             }
         }
@@ -233,6 +295,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
+        persistWorkspace()
         return addedCount
     }
 
@@ -281,6 +344,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
         viewModelScope.launch { repository.savePermanentCoord(newPerm) }
+        persistWorkspace()
         return null
     }
 
@@ -303,6 +367,10 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
         viewModelScope.launch { repository.savePermanentCoord(target) }
+        persistWorkspace()
+        if (_uiState.value.timerState.isActive) {
+            syncNotificationsForCurrentState()
+        }
         return target
     }
 
@@ -318,6 +386,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
         viewModelScope.launch { repository.savePermanentCoord(null) }
+        persistWorkspace()
     }
 
     /**
@@ -357,17 +426,21 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
+        persistWorkspace()
 
-        if (triggerTimer) {
+        val effectiveWaitSec = if (triggerTimer) {
             viewModelScope.launch { repository.saveLastActionEpoch(null) }
-            if (returnCooldownSec > 0) {
-                startTimer(returnCooldownSec, perm.label, switchToTimerTab = false)
+            applyJumpCooldownTimer(returnCooldownSec, perm.label)
+        } else {
+            if (_uiState.value.timerState.isActive) {
+                syncNotificationsForCurrentState()
             }
+            returnCooldownSec
         }
 
         return JumpOutcome(
             destination = perm,
-            jumpCooldownSeconds = returnCooldownSec,
+            jumpCooldownSeconds = effectiveWaitSec,
             returnToPermanentSeconds = 0
         )
     }
@@ -409,13 +482,19 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
+        persistWorkspace()
+        if (_uiState.value.timerState.isActive) {
+            syncNotificationsForCurrentState()
+        }
         return promoted to eval.remainingCooldownSeconds
     }
 
     /**
      * Commits a real "Jump / Switch" to a chosen better coordinate:
-     * 1. Sets it as Active Current Anchor (index 0) and updates `lastLocationCoord`
-     * 2. Automatically triggers the live Cooldown Timer for the jump wait
+     * 1. Sets it as Active Current Anchor (index 0), persists it so it never disappears on app restart,
+     *    and updates `lastLocationCoord`
+     * 2. Triggers or preserves the live Cooldown Timer & notifications (never deleting or shortening
+     *    a longer already-running cooldown!)
      * 3. Computes and returns the Return-to-Permanent cooldown so you always know how long back to base!
      */
     fun jumpToCoordinate(coordId: String): JumpOutcome? {
@@ -464,23 +543,54 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
+        persistWorkspace()
         viewModelScope.launch { repository.saveLastActionEpoch(null) }
 
-        if (jumpWaitSec > 0) {
-            startTimer(jumpWaitSec, destination.label, switchToTimerTab = false)
-        }
+        val effectiveWaitSec = applyJumpCooldownTimer(jumpWaitSec, destination.label)
 
         return JumpOutcome(
             destination = destination,
-            jumpCooldownSeconds = jumpWaitSec,
+            jumpCooldownSeconds = effectiveWaitSec,
             returnToPermanentSeconds = returnToPermSec
         )
+    }
+
+    /**
+     * Starts or preserves the active cooldown timer after a Jump.
+     * Never cancels or shortens an already-running longer cooldown so scheduled notifications stay intact.
+     */
+    private fun applyJumpCooldownTimer(jumpWaitSec: Int, destinationLabel: String): Int {
+        val now = System.currentTimeMillis()
+        val activeTimer = _uiState.value.timerState
+        val currentRemaining = if (activeTimer.isActive) activeTimer.remainingSeconds(now) else 0
+
+        return when {
+            jumpWaitSec > currentRemaining -> {
+                startTimer(jumpWaitSec, destinationLabel, switchToTimerTab = false)
+                jumpWaitSec
+            }
+            currentRemaining > 0 -> {
+                // Keep the longer running/paused cooldown & its scheduled alarms intact,
+                // updating only the destination label & live notification return-home info.
+                val preserved = activeTimer.copy(label = destinationLabel)
+                _uiState.update { it.copy(timerState = preserved, nowEpochMillis = now) }
+                persistTimerState(preserved)
+                syncNotificationsForCurrentState()
+                currentRemaining
+            }
+            activeTimer.isFinished -> {
+                resetTimer()
+                0
+            }
+            else -> 0
+        }
     }
 
     fun clearLastLocationReference() {
         _uiState.update { current ->
             recomputeState(current.copy(lastLocationCoord = null))
         }
+        persistWorkspace()
     }
 
     /**
@@ -513,6 +623,10 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
+        persistWorkspace()
+        if (_uiState.value.timerState.isActive) {
+            syncNotificationsForCurrentState()
+        }
     }
 
     /**
@@ -528,6 +642,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { current ->
             recomputeState(current.copy(coordinates = listOf(anchor) + sortedCandidates))
         }
+        persistWorkspace()
     }
 
     /**
@@ -539,6 +654,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { current ->
             recomputeState(current.copy(coordinates = optimal))
         }
+        persistWorkspace()
     }
 
     fun updateCoordinate(coordId: String, newLabel: String, newRawCoords: String): String? {
@@ -586,6 +702,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         if (updatedPerm?.id == coordId) {
             viewModelScope.launch { repository.savePermanentCoord(updatedPerm) }
         }
+        persistWorkspace()
         return null
     }
 
@@ -610,6 +727,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
+        persistWorkspace()
     }
 
     fun undoDelete() {
@@ -625,12 +743,13 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
+        persistWorkspace()
     }
 
     /**
      * Explicit user Clear Temps / Reset to Permanent action:
      * Wipes all temporary pasted coordinates and resets Active Anchor cleanly to the Permanent Base
-     * (keeping the Permanent Base intact!).
+     * (keeping the Permanent Base and any running cooldown notifications intact!).
      */
     fun clearTempsAndResetToPermanent() {
         val state = _uiState.value
@@ -647,6 +766,10 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
+        persistWorkspace()
+        if (_uiState.value.timerState.isActive) {
+            syncNotificationsForCurrentState()
+        }
     }
 
     fun undoClearTemps() {
@@ -659,6 +782,19 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                     lastClearedSnapshot = null
                 )
             )
+        }
+        persistWorkspace()
+        if (_uiState.value.timerState.isActive) {
+            syncNotificationsForCurrentState()
+        }
+    }
+
+    private fun persistWorkspace() {
+        viewModelScope.launch {
+            workspacePersistMutex.withLock {
+                val latest = _uiState.value
+                repository.saveActiveWorkspace(latest.coordinates, latest.lastLocationCoord)
+            }
         }
     }
 
@@ -726,6 +862,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         if (existingPerm == null) {
             viewModelScope.launch { repository.savePermanentCoord(permToKeep) }
         }
+        persistWorkspace()
     }
 
     fun toggleDistanceUnit() {
@@ -802,7 +939,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 selectedTab = if (switchToTimerTab) AppTab.TIMER else current.selectedTab
             )
         }
-        viewModelScope.launch { repository.saveTimerState(nextTimer) }
+        persistTimerState(nextTimer)
         syncNotificationsForCurrentState()
     }
 
@@ -821,7 +958,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
         _uiState.update { it.copy(timerState = updated, nowEpochMillis = now) }
-        viewModelScope.launch { repository.saveTimerState(updated) }
+        persistTimerState(updated)
         syncNotificationsForCurrentState()
     }
 
@@ -842,15 +979,21 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 pausedRemainingSeconds = remaining
             )
         }
+        if (deltaSeconds > 0) {
+            lastPreAlertTargetEpoch = 0L
+            lastReadyAlertTargetEpoch = 0L
+        }
         _uiState.update { it.copy(timerState = updated, nowEpochMillis = now) }
-        viewModelScope.launch { repository.saveTimerState(updated) }
+        persistTimerState(updated)
         syncNotificationsForCurrentState()
     }
 
     fun resetTimer() {
         val empty = TimerState()
+        lastPreAlertTargetEpoch = 0L
+        lastReadyAlertTargetEpoch = 0L
         _uiState.update { it.copy(timerState = empty) }
-        viewModelScope.launch { repository.saveTimerState(empty) }
+        persistTimerState(empty)
         CooldownNotificationManager.cancelAllScheduledAndLive(getApplication())
     }
 
@@ -876,6 +1019,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearNotificationLog() {
         _uiState.update { it.copy(notificationLog = emptyList()) }
+        viewModelScope.launch { repository.clearNotificationLog() }
     }
 
     fun syncNotificationsForCurrentState() {
@@ -910,6 +1054,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { current ->
             current.copy(notificationLog = (listOf(entry) + current.notificationLog).take(15))
         }
+        viewModelScope.launch { repository.appendNotificationLog(entry) }
     }
 
     private fun nextAvailableLabel(existing: List<CoordPoint>): String {

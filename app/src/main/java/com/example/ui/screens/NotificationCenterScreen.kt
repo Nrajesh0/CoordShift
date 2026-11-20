@@ -10,6 +10,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -181,7 +182,10 @@ fun NotificationCenterScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
                         IconButton(
                             onClick = onBack,
                             modifier = Modifier.testTag("notif_center_back_button")
@@ -193,19 +197,24 @@ fun NotificationCenterScreen(
                             )
                         }
                         Spacer(modifier = Modifier.width(4.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Notification Center",
                                 style = MaterialTheme.typography.headlineMedium,
-                                color = MaterialTheme.colorScheme.onBackground
+                                color = MaterialTheme.colorScheme.onBackground,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 text = "Customize cooldown alerts & live shade bar",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     val active = prefs.masterEnabled && hasPermission
                     StatusPillBadge(
@@ -596,7 +605,10 @@ fun NotificationCenterScreen(
                                         VibrationPattern.entries.forEach { pat ->
                                             val selected = prefs.vibrationPattern == pat
                                             Surface(
-                                                onClick = { onUpdatePrefs { it.copy(vibrationPattern = pat) } },
+                                                onClick = {
+                                                    onUpdatePrefs { it.copy(vibrationPattern = pat) }
+                                                    CooldownNotificationManager.previewVibrationPattern(context, pat)
+                                                },
                                                 shape = RoundedCornerShape(10.dp),
                                                 color = if (selected) {
                                                     MaterialTheme.colorScheme.secondaryContainer
@@ -968,7 +980,11 @@ private fun NotifToggleRow(
 ) {
     val palette = LocalCooldownPalette.current
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {

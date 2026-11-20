@@ -19,15 +19,21 @@ data class ParsedCoord(
 object CoordinateParser {
 
     private val dmsRegex = Regex(
-        """(\d{1,3})\s*[°d]\s*(\d{1,2})\s*['′m]\s*(\d{1,2}(?:\.\d+)?)\s*["″s]?\s*([NSns])\s*[,;\s]+\s*(\d{1,3})\s*[°d]\s*(\d{1,2})\s*['′m]\s*(\d{1,2}(?:\.\d+)?)\s*["″s]?\s*([EWew])"""
+        """(\d{1,3})\s*[°d]\s*(\d{1,2})\s*['′’m]\s*(\d{1,2}(?:\.\d+)?)\s*["″”s]?\s*([NSns])\s*[,;\s]+\s*(\d{1,3})\s*[°d]\s*(\d{1,2})\s*['′’m]\s*(\d{1,2}(?:\.\d+)?)\s*["″”s]?\s*([EWew])"""
     )
 
     private val decimalPairRegex = Regex(
         """(?<![\d.])([+-]?(?:90(?:\.0+)?|[0-8]?\d(?:\.\d+)?))\s*[,;\s]+\s*([+-]?(?:180(?:\.0+)?|1[0-7]\d(?:\.\d+)?|[0-9]?\d(?:\.\d+)?))(?![\d.])"""
     )
 
+    // Exact place-pin coordinates inside Google Maps URLs take precedence over @ viewport center
+    private val googleMapsPinRegex = Regex(
+        """!3d([+-]?\d{1,2}(?:\.\d+)?)!4d([+-]?\d{1,3}(?:\.\d+)?)""",
+        RegexOption.IGNORE_CASE
+    )
+
     private val mapUrlCoordRegex = Regex(
-        """(?:geo:|@|[?&](?:q|ll|query|destination|center)=)([+-]?\d{1,2}\.\d+)\s*(?:,|%2C)\s*([+-]?\d{1,3}\.\d+)""",
+        """(?:geo:|@|[?&](?:q|ll|query|destination|center)=)([+-]?\d{1,2}(?:\.\d+)?)\s*(?:,|%2C)\s*([+-]?\d{1,3}(?:\.\d+)?)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -79,7 +85,18 @@ object CoordinateParser {
             }
         }
 
-        // 2. Check map URLs
+        // 2a. Check exact Google Maps place pin (!3d<lat>!4d<lng>) before viewport @lat,lng
+        val pinMatches = googleMapsPinRegex.findAll(line).toList()
+        if (pinMatches.isNotEmpty()) {
+            val pins = pinMatches.mapNotNull { match ->
+                val lat = match.groupValues[1].toDoubleOrNull() ?: return@mapNotNull null
+                val lon = match.groupValues[2].toDoubleOrNull() ?: return@mapNotNull null
+                if (isValid(lat, lon)) ParsedCoord(lat, lon, null) else null
+            }
+            if (pins.isNotEmpty()) return pins
+        }
+
+        // 2b. Check map URLs
         val urlMatches = mapUrlCoordRegex.findAll(line).toList()
         if (urlMatches.isNotEmpty()) {
             return urlMatches.mapNotNull { match ->

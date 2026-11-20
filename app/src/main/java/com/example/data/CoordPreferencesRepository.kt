@@ -2,39 +2,62 @@ package com.example.data
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.preferences.preferencesDataStoreFile
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
 import org.json.JSONObject
+import java.util.WeakHashMap
 
-private val Context.coordShiftDataStore: DataStore<Preferences> by preferencesDataStore(
-    name = "coordshift_prefs"
-)
+private object CoordShiftDataStoreHolder {
+    private val instances = WeakHashMap<Context, DataStore<Preferences>>()
+
+    fun get(context: Context): DataStore<Preferences> {
+        val appContext = context.applicationContext ?: context
+        return synchronized(instances) {
+            instances.getOrPut(appContext) {
+                PreferenceDataStoreFactory.create(
+                    produceFile = { appContext.preferencesDataStoreFile("coordshift_prefs") }
+                )
+            }
+        }
+    }
+}
+
+private val Context.coordShiftDataStore: DataStore<Preferences>
+    get() = CoordShiftDataStoreHolder.get(this)
 
 data class PersistedSession(
     val permanentCoord: CoordPoint?,
+    val activeCoordinates: List<CoordPoint> = emptyList(),
+    val lastLocationCoord: CoordPoint? = null,
     val distanceUnit: DistanceUnit,
     val themeMode: ThemeMode,
     val safetyBufferMinutes: Int,
     val lastActionEpochMillis: Long?,
     val timerState: TimerState,
-    val notificationPrefs: NotificationPreferences
+    val notificationPrefs: NotificationPreferences,
+    val notificationLog: List<NotificationLogEntry> = emptyList()
 )
 
 /**
- * Persists the user's Permanent Base coordinate, preferences, notification settings,
- * and active countdown timer. Temporary comparison coordinates stay cleanly in-memory.
+ * Persists the user's Permanent Base coordinate, active workspace coordinates (so jumped spots
+ * and comparisons survive app restarts while waiting for cooldown notifications until explicitly cleared),
+ * preferences, notification settings, recent alert history, and active countdown timer.
  */
 class CoordPreferencesRepository(private val context: Context) {
 
     private object Keys {
         val PERMANENT_COORD_JSON = stringPreferencesKey("permanent_coord_json")
+        val ACTIVE_COORDS_JSON = stringPreferencesKey("active_coords_json")
+        val LAST_LOCATION_JSON = stringPreferencesKey("last_location_json")
         val DISTANCE_UNIT = stringPreferencesKey("distance_unit")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val SAFETY_BUFFER_MIN = intPreferencesKey("safety_buffer_min")
@@ -56,10 +79,13 @@ class CoordPreferencesRepository(private val context: Context) {
         val NOTIF_VIBRATION_PATTERN = stringPreferencesKey("notif_vibration_pattern")
         val NOTIF_SHOW_LOCKSCREEN = booleanPreferencesKey("notif_show_lockscreen")
         val NOTIF_CUSTOM_MESSAGE = stringPreferencesKey("notif_custom_message")
+        val NOTIF_LOG_JSON = stringPreferencesKey("notif_log_json")
     }
 
     val sessionFlow: Flow<PersistedSession> = context.coordShiftDataStore.data.map { prefs ->
         val permanent = decodeCoord(prefs[Keys.PERMANENT_COORD_JSON])
+        val activeCoords = decodeCoordList(prefs[Keys.ACTIVE_COORDS_JSON])
+        val lastLocation = decodeCoord(prefs[Keys.LAST_LOCATION_JSON])
         val unit = runCatching {
             DistanceUnit.valueOf(prefs[Keys.DISTANCE_UNIT] ?: DistanceUnit.KM.name)
         }.getOrDefault(DistanceUnit.KM)
@@ -98,14 +124,18 @@ class CoordPreferencesRepository(private val context: Context) {
             customReadyMessage = prefs[Keys.NOTIF_CUSTOM_MESSAGE]
                 ?: "Cooldown complete — safe to act now!"
         )
+        val notifLog = decodeLog(prefs[Keys.NOTIF_LOG_JSON])
         PersistedSession(
             permanentCoord = permanent,
+            activeCoordinates = activeCoords,
+            lastLocationCoord = lastLocation,
             distanceUnit = unit,
             themeMode = theme,
             safetyBufferMinutes = buffer,
             lastActionEpochMillis = lastAction,
             timerState = timer,
-            notificationPrefs = notifPrefs
+            notificationPrefs = notifPrefs,
+            notificationLog = notifLog
         )
     }
 
@@ -115,6 +145,21 @@ class CoordPreferencesRepository(private val context: Context) {
                 prefs.remove(Keys.PERMANENT_COORD_JSON)
             } else {
                 prefs[Keys.PERMANENT_COORD_JSON] = encodeCoord(coord)
+            }
+        }
+    }
+
+    suspend fun saveActiveWorkspace(coordinates: List<CoordPoint>, lastLocation: CoordPoint?) {
+        context.coordShiftDataStore.edit { prefs ->
+            if (coordinates.isEmpty()) {
+                prefs.remove(Keys.ACTIVE_COORDS_JSON)
+            } else {
+                prefs[Keys.ACTIVE_COORDS_JSON] = encodeCoordList(coordinates)
+            }
+            if (lastLocation == null) {
+                prefs.remove(Keys.LAST_LOCATION_JSON)
+            } else {
+                prefs[Keys.LAST_LOCATION_JSON] = encodeCoord(lastLocation)
             }
         }
     }
@@ -172,27 +217,101 @@ class CoordPreferencesRepository(private val context: Context) {
         }
     }
 
+    suspend fun appendNotificationLog(entry: NotificationLogEntry) {
+        context.coordShiftDataStore.edit { prefs ->
+            val current = decodeLog(prefs[Keys.NOTIF_LOG_JSON])
+            val updated = (listOf(entry) + current).take(15)
+            prefs[Keys.NOTIF_LOG_JSON] = encodeLog(updated)
+        }
+    }
+
+    suspend fun clearNotificationLog() {
+        context.coordShiftDataStore.edit { prefs ->
+            prefs.remove(Keys.NOTIF_LOG_JSON)
+        }
+    }
+
     private fun encodeCoord(pt: CoordPoint): String {
+        return coordToJson(pt).toString()
+    }
+
+    private fun coordToJson(pt: CoordPoint): JSONObject {
         return JSONObject()
             .put("id", pt.id)
             .put("lat", pt.latitude)
             .put("lng", pt.longitude)
             .put("label", pt.label)
             .put("createdAt", pt.createdAtMillis)
-            .toString()
     }
 
     private fun decodeCoord(json: String?): CoordPoint? {
         if (json.isNullOrBlank()) return null
         return runCatching {
-            val obj = JSONObject(json)
-            CoordPoint(
-                id = obj.getString("id"),
-                latitude = obj.getDouble("lat"),
-                longitude = obj.getDouble("lng"),
-                label = obj.optString("label", "Home Base"),
-                createdAtMillis = obj.optLong("createdAt", System.currentTimeMillis())
-            )
+            jsonToCoord(JSONObject(json))
         }.getOrNull()
+    }
+
+    private fun jsonToCoord(obj: JSONObject): CoordPoint {
+        return CoordPoint(
+            id = obj.getString("id"),
+            latitude = obj.getDouble("lat"),
+            longitude = obj.getDouble("lng"),
+            label = obj.optString("label", "Home Base"),
+            createdAtMillis = obj.optLong("createdAt", System.currentTimeMillis())
+        )
+    }
+
+    private fun encodeCoordList(coords: List<CoordPoint>): String {
+        val arr = JSONArray()
+        coords.forEach { pt -> arr.put(coordToJson(pt)) }
+        return arr.toString()
+    }
+
+    private fun decodeCoordList(json: String?): List<CoordPoint> {
+        if (json.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(json)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    add(jsonToCoord(arr.getJSONObject(i)))
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeLog(entries: List<NotificationLogEntry>): String {
+        val arr = JSONArray()
+        entries.forEach { e ->
+            arr.put(
+                JSONObject()
+                    .put("id", e.id)
+                    .put("title", e.title)
+                    .put("body", e.body)
+                    .put("ts", e.timestampMillis)
+                    .put("pre", e.isPreAlert)
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun decodeLog(json: String?): List<NotificationLogEntry> {
+        if (json.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(json)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    add(
+                        NotificationLogEntry(
+                            id = obj.optString("id", "$i"),
+                            title = obj.optString("title", ""),
+                            body = obj.optString("body", ""),
+                            timestampMillis = obj.optLong("ts", 0L),
+                            isPreAlert = obj.optBoolean("pre", false)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
     }
 }
