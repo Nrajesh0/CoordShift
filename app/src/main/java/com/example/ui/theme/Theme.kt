@@ -85,7 +85,10 @@ private val DarkColorScheme = darkColorScheme(
     surfaceContainerHigh = ObsidianSurfaceHigh,
     surfaceContainerHighest = Color(0xFF252F3F),
     outline = ObsidianBorder,
-    outlineVariant = Color(0xFF1D2532)
+    outlineVariant = Color(0xFF1D2532),
+    inverseSurface = ObsidianSurfaceHigh,
+    inverseOnSurface = ObsidianTextPrimary,
+    inversePrimary = SignalEmerald
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -117,7 +120,10 @@ private val LightColorScheme = lightColorScheme(
     surfaceContainerHigh = PorcelainSurfaceHigh,
     surfaceContainerHighest = Color(0xFFD5DEE9),
     outline = PorcelainBorder,
-    outlineVariant = Color(0xFFE5EAF2)
+    outlineVariant = Color(0xFFE5EAF2),
+    inverseSurface = PorcelainTextPrimary,
+    inverseOnSurface = PorcelainSurface,
+    inversePrimary = SignalEmerald
 )
 
 val CoordShiftShapes = Shapes(

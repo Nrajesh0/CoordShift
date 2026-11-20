@@ -70,8 +70,6 @@ fun RouteRadarScreen(
     onPromoteCoordinate: (String) -> Unit,
     onSwitchToPermanent: (Boolean) -> Unit,
     onSwitchToTemp: () -> Unit,
-    onClearTempsResetToPermanent: () -> Unit,
-    onClearLastLocation: () -> Unit,
     onGoToCompare: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -92,28 +90,25 @@ fun RouteRadarScreen(
             item(key = "radar_header") {
                 Column {
                     Text(
-                        text = "Radar & Multi-Hop",
+                        text = "Radar",
                         style = MaterialTheme.typography.headlineLarge,
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     Text(
-                        text = "Live-synced with Compare — flip Permanent ⇄ Temp or tap any pin",
+                        text = "Synced with Compare — tap any spot to switch",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // Shared Permanent/Temp Anchor Switcher synced directly with Compare
             if (uiState.permanentCoord != null) {
                 item(key = "radar_anchor_bar") {
                     AnchorModeBar(
                         uiState = uiState,
                         onSwitchToPermanent = onSwitchToPermanent,
                         onSwitchToTemp = onSwitchToTemp,
-                        onOpenSetPermanentDialog = onGoToCompare,
-                        onClearTempsResetToPermanent = onClearTempsResetToPermanent,
-                        onClearLastLocation = onClearLastLocation
+                        onOpenSetPermanentDialog = onGoToCompare
                     )
                 }
             }

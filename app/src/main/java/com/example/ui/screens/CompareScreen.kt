@@ -4,10 +4,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,6 +19,8 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,41 +39,38 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.Undo
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -80,9 +82,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -101,15 +106,15 @@ import com.example.data.CoordShiftUiState
 import com.example.data.DistanceUnit
 import com.example.data.EvaluatedCoord
 import com.example.domain.CooldownCalculator
-import com.example.ui.components.AnchorModeBar
-import com.example.ui.components.CooldownSeverityBar
+import com.example.ui.components.CompareOptionsSheet
+import com.example.ui.components.EditCoordinateDialog
+import com.example.ui.components.SetPermanentBaseDialog
 import com.example.ui.components.StatusPillBadge
 import com.example.ui.components.accentFor
 import com.example.ui.components.containerFor
 import com.example.ui.theme.LocalCooldownPalette
 import com.example.ui.theme.MonoStyles
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CompareScreen(
     uiState: CoordShiftUiState,
@@ -132,7 +137,7 @@ fun CompareScreen(
     onDragPromotedToCurrent: (CoordPoint, Int) -> Unit,
     onLoadDemoTrio: () -> Unit,
     onToggleUnit: () -> Unit,
-    onCycleBuffer: () -> Unit,
+    onSetSafetyBuffer: (Int) -> Unit,
     onSetLastActionMinutesAgo: (Int?) -> Unit,
     onOpenTimerTab: () -> Unit,
     onToggleTimerPauseResume: () -> Unit,
@@ -147,7 +152,10 @@ fun CompareScreen(
 
     var editingCoord by remember { mutableStateOf<CoordPoint?>(null) }
     var showPermanentDialog by remember { mutableStateOf(false) }
-    var showLastActionSheet by remember { mutableStateOf(false) }
+    var showOptionsSheet by remember { mutableStateOf(false) }
+    var expandedCardId by remember { mutableStateOf<String?>(null) }
+
+    // Smooth midpoint-based drag-and-drop state
     var draggedId by remember { mutableStateOf<String?>(null) }
     var dragStartIndex by remember { mutableStateOf(-1) }
     var dragStartCooldownSeconds by remember { mutableStateOf(0) }
@@ -169,6 +177,90 @@ fun CompareScreen(
         onShowMessage("Copied $coords")
     }
 
+    fun buildDragModifier(evaluated: EvaluatedCoord): Modifier {
+        return Modifier
+            .minimumInteractiveComponentSize()
+            .pointerInput(evaluated.point.id) {
+                detectDragGestures(
+                    onDragStart = {
+                        val startIdx = latestEvaluated.indexOfFirst { it.point.id == evaluated.point.id }
+                        val startEval = latestEvaluated.getOrNull(startIdx)
+                        draggedId = evaluated.point.id
+                        dragStartIndex = startIdx
+                        dragStartCooldownSeconds = startEval?.remainingCooldownSeconds ?: 0
+                        dragOffsetY = 0f
+                        staleOffsetBeforeSwap = null
+                        expandedCardId = null
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        dragOffsetY += dragAmount.y
+
+                        val currentList = latestEvaluated
+                        val fromIdx = currentList.indexOfFirst { it.point.id == evaluated.point.id }
+                        if (fromIdx == -1) return@detectDragGestures
+
+                        val visibleCoordInfos = listState.layoutInfo.visibleItemsInfo
+                            .mapNotNull { info ->
+                                val id = info.key as? String ?: return@mapNotNull null
+                                val coordIdx = currentList.indexOfFirst { it.point.id == id }
+                                if (coordIdx >= 0) coordIdx to info else null
+                            }
+
+                        val currentInfo = visibleCoordInfos
+                            .firstOrNull { it.first == fromIdx }?.second
+                            ?: return@detectDragGestures
+
+                        if (staleOffsetBeforeSwap != null) {
+                            if (currentInfo.offset == staleOffsetBeforeSwap) {
+                                return@detectDragGestures
+                            } else {
+                                staleOffsetBeforeSwap = null
+                            }
+                        }
+
+                        val draggedMidY = currentInfo.offset + currentInfo.size / 2f + dragOffsetY
+                        val targetPair = visibleCoordInfos.firstOrNull { (cIdx, info) ->
+                            if (cIdx == fromIdx) return@firstOrNull false
+                            val targetMidY = info.offset + info.size / 2f
+                            if (cIdx < fromIdx) draggedMidY < targetMidY else draggedMidY > targetMidY
+                        }
+
+                        if (targetPair != null) {
+                            val (toIdx, targetInfo) = targetPair
+                            val stepIdx = if (toIdx < fromIdx) fromIdx - 1 else fromIdx + 1
+                            val stepInfo = visibleCoordInfos
+                                .firstOrNull { it.first == stepIdx }?.second
+                                ?: targetInfo
+                            staleOffsetBeforeSwap = currentInfo.offset
+                            onMoveCoordinate(fromIdx, stepIdx)
+                            dragOffsetY -= (stepInfo.offset - currentInfo.offset)
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        }
+                    },
+                    onDragEnd = {
+                        val finalIdx = latestEvaluated.indexOfFirst { it.point.id == evaluated.point.id }
+                        if (finalIdx == 0 && dragStartIndex > 0) {
+                            onDragPromotedToCurrent(evaluated.point, dragStartCooldownSeconds)
+                        }
+                        draggedId = null
+                        dragStartIndex = -1
+                        dragStartCooldownSeconds = 0
+                        dragOffsetY = 0f
+                        staleOffsetBeforeSwap = null
+                    },
+                    onDragCancel = {
+                        draggedId = null
+                        dragStartIndex = -1
+                        dragStartCooldownSeconds = 0
+                        dragOffsetY = 0f
+                        staleOffsetBeforeSwap = null
+                    }
+                )
+            }
+    }
+
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter
@@ -178,305 +270,112 @@ fun CompareScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .widthIn(max = 680.dp),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 1. Minimal 2026 Top Header & Quick Controls
-            item(key = "header") {
-                CompareHeader(
-                    tempCount = uiState.tempCount,
-                    distanceUnit = uiState.distanceUnit,
-                    safetyBufferMinutes = uiState.safetyBufferMinutes,
-                    elapsedSeconds = uiState.elapsedSinceLastActionSeconds,
-                    onToggleUnit = onToggleUnit,
-                    onCycleBuffer = onCycleBuffer,
-                    onOpenLastAction = { showLastActionSheet = true }
-                )
-            }
-
-            // 2. Live Mini Cooldown Timer Strip (visible whenever a timer is active)
-            if (uiState.timerState.isActive) {
-                item(key = "active_timer_strip") {
-                    ActiveTimerMiniBar(
-                        uiState = uiState,
-                        onTogglePauseResume = onToggleTimerPauseResume,
-                        onOpenTimerTab = onOpenTimerTab
-                    )
-                }
-            }
-
-            // 3. Permanent Base & Permanent <-> Temp Anchor Switcher
-            item(key = "anchor_mode_bar") {
-                AnchorModeBar(
-                    uiState = uiState,
-                    onSwitchToPermanent = { triggerTimer ->
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onSwitchToPermanent(triggerTimer)
+            // 1. Clean 1-Row App Header
+            item(key = "home_header") {
+                HomeTopBar(
+                    hasTempsOrLast = uiState.tempCount > 0 || uiState.lastLocationCoord != null,
+                    hasActiveModifiers = uiState.elapsedSinceLastActionSeconds > 0 || uiState.safetyBufferMinutes > 0,
+                    modifierBadge = buildString {
+                        if (uiState.elapsedSinceLastActionSeconds > 0) {
+                            append("-${uiState.elapsedSinceLastActionSeconds / 60}m")
+                        }
+                        if (uiState.safetyBufferMinutes > 0) {
+                            if (isNotEmpty()) append(" ")
+                            append("+${uiState.safetyBufferMinutes}m")
+                        }
                     },
-                    onSwitchToTemp = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onSwitchToTemp()
-                    },
-                    onOpenSetPermanentDialog = { showPermanentDialog = true },
-                    onClearTempsResetToPermanent = {
+                    onReset = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        expandedCardId = null
                         onClearTempsResetToPermanent()
                     },
-                    onClearLastLocation = onClearLastLocation
+                    onOpenOptions = { showOptionsSheet = true }
                 )
             }
 
-            // 4. Smart Paste & Multi-Line Input Dock for Temporary Coordinates
-            item(key = "paste_dock") {
-                SmartPasteDock(
-                    inputText = uiState.inputText,
-                    errorMessage = uiState.inputError,
-                    onInputChanged = onInputChanged,
-                    onPasteClipboard = {
-                        val text = readClipboardText()
-                        if (text.isNullOrBlank()) {
-                            onShowMessage("Clipboard is empty")
-                        } else {
-                            val added = onSubmitInput(text)
-                            if (added > 0) {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onShowMessage(
-                                    if (added == 1) "Added 1 temp coordinate"
-                                    else "Added $added temp coordinates"
-                                )
-                            }
-                        }
-                    },
-                    onAddManual = {
-                        keyboard?.hide()
-                        val added = onSubmitInput(uiState.inputText)
-                        if (added > 0) {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onShowMessage(
-                                if (added == 1) "Temp coordinate added"
-                                else "Added $added temp coordinates"
-                            )
-                        }
-                    }
-                )
-            }
-
-            // 5. Telemetry Strip & Quick Sort Actions (when >= 2 coordinates)
-            if (uiState.evaluatedCoords.size >= 2) {
-                item(key = "telemetry_strip") {
-                    ComparisonTelemetryStrip(
-                        bestCandidate = uiState.bestCandidate,
-                        farthestCandidate = uiState.farthestCandidate,
-                        distanceUnit = uiState.distanceUnit,
-                        candidateCount = uiState.evaluatedCoords.size - 1,
-                        hasPermanent = uiState.permanentCoord != null,
-                        hasTemps = uiState.tempCount > 0,
-                        onSortFastest = {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            onSortFastest()
-                            onShowMessage("Sorted by shortest cooldown")
-                        },
-                        onCopySummary = onCopySummary,
-                        onClearTemps = onClearTempsResetToPermanent
-                    )
-                }
-            }
-
-            // Drag hint banner while dragging a card
-            item(key = "drag_hint") {
-                AnimatedVisibility(
-                    visible = draggedId != null && uiState.evaluatedCoords.size >= 2,
-                    enter = fadeIn(),
-                    exit = fadeOut()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(palette.fastContainer)
-                            .border(1.dp, palette.fast.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.SwapVert,
-                            contentDescription = null,
-                            tint = palette.fast,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Drop in top slot to compare from this coordinate",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = palette.fast
-                        )
-                    }
-                }
-            }
-
-            // 6. Empty State OR Interactive Draggable Coordinate Cards
+            // 2. Empty State OR Unified Hero "NOW" Card + Quick Paste + Ranked Spot List
             if (uiState.evaluatedCoords.isEmpty()) {
-                item(key = "empty_state") {
-                    EmptyCompareState(
+                item(key = "paste_bar_empty") {
+                    QuickPasteCapsule(
+                        inputText = uiState.inputText,
+                        errorMessage = uiState.inputError,
+                        onInputChanged = onInputChanged,
                         onPasteClipboard = {
                             val text = readClipboardText()
                             if (text.isNullOrBlank()) {
-                                onShowMessage("Clipboard is empty — paste or set Permanent Base")
-                            } else {
-                                val added = onSubmitInput(text)
-                                if (added > 0) {
-                                    onShowMessage("Added $added coordinate${if (added > 1) "s" else ""}")
-                                }
+                                onShowMessage("Clipboard is empty")
+                            } else if (onSubmitInput(text) > 0) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             }
                         },
-                        onLoadDemo = {
-                            onLoadDemoTrio()
-                            onShowMessage("Loaded Permanent Base + 3 temp spots")
+                        onAddManual = {
+                            keyboard?.hide()
+                            if (onSubmitInput(uiState.inputText) > 0) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
                         }
                     )
                 }
-            } else {
-                itemsIndexed(
-                    items = uiState.evaluatedCoords,
-                    key = { _, item -> item.point.id }
-                ) { index, evaluated ->
-                    val isDragging = draggedId == evaluated.point.id
-                    val scale by animateFloatAsState(
-                        targetValue = if (isDragging) 1.025f else 1f,
-                        animationSpec = spring(stiffness = 600f),
-                        label = "card_scale"
+
+                item(key = "welcome_card") {
+                    WelcomeEmptyDeck(
+                        onSetHome = { showPermanentDialog = true },
+                        onPasteNow = {
+                            val text = readClipboardText()
+                            if (text.isNullOrBlank()) {
+                                onShowMessage("Clipboard is empty")
+                            } else {
+                                onSubmitInput(text)
+                            }
+                        },
+                        onLoadSample = onLoadDemoTrio
                     )
+                }
+            } else {
+                val anchorEval = uiState.evaluatedCoords.first()
+                val candidates = uiState.evaluatedCoords.drop(1)
 
-                    CoordinateCompareCard(
-                        evaluated = evaluated,
-                        slotNumber = index + 1,
-                        distanceUnit = uiState.distanceUnit,
-                        permanentLabel = uiState.permanentCoord?.label,
-                        lastLocationLabel = uiState.lastLocationCoord?.label,
-                        hasElapsedCredit = uiState.elapsedSinceLastActionSeconds > 0,
+                // Hero Focus Card: Combines Mode Switcher + Where You Are + Active Timer + Home Return
+                item(key = anchorEval.point.id) {
+                    val isDragging = draggedId == anchorEval.point.id
+                    val scale by animateFloatAsState(
+                        targetValue = if (isDragging) 1.02f else 1f,
+                        animationSpec = spring(stiffness = 600f),
+                        label = "hero_scale"
+                    )
+                    HeroNowCard(
+                        anchor = anchorEval,
+                        uiState = uiState,
                         isDragging = isDragging,
-                        onPreviewAsCurrent = {
+                        onSwitchToPermanent = {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            onPreviewAsCurrent(evaluated.point.id)
+                            onSwitchToPermanent(false)
                         },
-                        onJumpHere = {
+                        onSwitchToTemp = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onSwitchToTemp()
+                        },
+                        onOpenSetHome = { showPermanentDialog = true },
+                        onCopyCoords = {
+                            copyToClipboard(anchorEval.point.label, anchorEval.point.formattedCoords(5))
+                        },
+                        onEditAnchor = { editingCoord = anchorEval.point },
+                        onPinAnchorAsHome = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onJumpToCoordinate(evaluated.point.id)
+                            onPinAsPermanent(anchorEval.point.id)
                         },
-                        onPinAsPermanent = {
+                        onOpenTimerTab = onOpenTimerTab,
+                        onToggleTimerPauseResume = onToggleTimerPauseResume,
+                        onReturnHome = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onPinAsPermanent(evaluated.point.id)
+                            onSwitchToPermanent(true)
                         },
-                        onCopy = {
-                            copyToClipboard(
-                                evaluated.point.label,
-                                evaluated.point.formattedCoords(5)
-                            )
-                        },
-                        onEditLabel = { editingCoord = evaluated.point },
-                        onDelete = { onDeleteCoordinate(evaluated.point.id) },
-                        dragHandleModifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .pointerInput(evaluated.point.id) {
-                                detectDragGestures(
-                                    onDragStart = {
-                                        val startIdx = latestEvaluated.indexOfFirst {
-                                            it.point.id == evaluated.point.id
-                                        }
-                                        val startEval = latestEvaluated.getOrNull(startIdx)
-                                        draggedId = evaluated.point.id
-                                        dragStartIndex = startIdx
-                                        dragStartCooldownSeconds = startEval?.remainingCooldownSeconds ?: 0
-                                        dragOffsetY = 0f
-                                        staleOffsetBeforeSwap = null
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        dragOffsetY += dragAmount.y
-
-                                        val currentList = latestEvaluated
-                                        val fromIdx = currentList.indexOfFirst {
-                                            it.point.id == evaluated.point.id
-                                        }
-                                        if (fromIdx == -1) return@detectDragGestures
-
-                                        val visibleCoordInfos = listState.layoutInfo.visibleItemsInfo
-                                            .mapNotNull { info ->
-                                                val id = info.key as? String ?: return@mapNotNull null
-                                                val coordIdx = currentList.indexOfFirst {
-                                                    it.point.id == id
-                                                }
-                                                if (coordIdx >= 0) coordIdx to info else null
-                                            }
-
-                                        val currentInfo = visibleCoordInfos
-                                            .firstOrNull { it.first == fromIdx }?.second
-                                            ?: return@detectDragGestures
-
-                                        if (staleOffsetBeforeSwap != null) {
-                                            if (currentInfo.offset == staleOffsetBeforeSwap) {
-                                                return@detectDragGestures
-                                            } else {
-                                                staleOffsetBeforeSwap = null
-                                            }
-                                        }
-
-                                        val draggedMidY = currentInfo.offset +
-                                            currentInfo.size / 2f + dragOffsetY
-
-                                        val targetPair = visibleCoordInfos.firstOrNull { (cIdx, info) ->
-                                            if (cIdx == fromIdx) return@firstOrNull false
-                                            val targetMidY = info.offset + info.size / 2f
-                                            if (cIdx < fromIdx) {
-                                                draggedMidY < targetMidY
-                                            } else {
-                                                draggedMidY > targetMidY
-                                            }
-                                        }
-
-                                        if (targetPair != null) {
-                                            val (toIdx, targetInfo) = targetPair
-                                            val stepIdx = if (toIdx < fromIdx) fromIdx - 1 else fromIdx + 1
-                                            val stepInfo = visibleCoordInfos
-                                                .firstOrNull { it.first == stepIdx }?.second
-                                                ?: targetInfo
-                                            staleOffsetBeforeSwap = currentInfo.offset
-                                            onMoveCoordinate(fromIdx, stepIdx)
-                                            dragOffsetY -= (stepInfo.offset - currentInfo.offset)
-                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        }
-                                    },
-                                    onDragEnd = {
-                                        val finalIdx = latestEvaluated.indexOfFirst {
-                                            it.point.id == evaluated.point.id
-                                        }
-                                        if (finalIdx == 0 && dragStartIndex > 0) {
-                                            onDragPromotedToCurrent(
-                                                evaluated.point,
-                                                dragStartCooldownSeconds
-                                            )
-                                        }
-                                        draggedId = null
-                                        dragStartIndex = -1
-                                        dragStartCooldownSeconds = 0
-                                        dragOffsetY = 0f
-                                        staleOffsetBeforeSwap = null
-                                    },
-                                    onDragCancel = {
-                                        draggedId = null
-                                        dragStartIndex = -1
-                                        dragStartCooldownSeconds = 0
-                                        dragOffsetY = 0f
-                                        staleOffsetBeforeSwap = null
-                                    }
-                                )
-                            },
+                        onClearLastLocation = onClearLastLocation,
                         modifier = Modifier
-                            .then(
-                                if (!isDragging) Modifier.animateItem() else Modifier
-                            )
+                            .then(if (!isDragging) Modifier.animateItem() else Modifier)
                             .zIndex(if (isDragging) 10f else 0f)
                             .graphicsLayer {
                                 translationY = if (isDragging) dragOffsetY else 0f
@@ -486,58 +385,232 @@ fun CompareScreen(
                     )
                 }
 
-                // Helpful 1-coordinate prompt to paste temp coords
-                if (uiState.evaluatedCoords.size == 1) {
-                    item(key = "add_more_hint") {
+                // Direct 1-Tap Paste Capsule
+                item(key = "paste_bar") {
+                    QuickPasteCapsule(
+                        inputText = uiState.inputText,
+                        errorMessage = uiState.inputError,
+                        onInputChanged = onInputChanged,
+                        onPasteClipboard = {
+                            val text = readClipboardText()
+                            if (text.isNullOrBlank()) {
+                                onShowMessage("Clipboard is empty")
+                            } else if (onSubmitInput(text) > 0) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                        },
+                        onAddManual = {
+                            keyboard?.hide()
+                            if (onSubmitInput(uiState.inputText) > 0) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                        }
+                    )
+                }
+
+                // Active Drag Hint
+                item(key = "drag_hint") {
+                    AnimatedVisibility(
+                        visible = draggedId != null && uiState.evaluatedCoords.size >= 2,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(palette.fastContainer)
+                                .border(1.dp, palette.fast.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.SwapVert,
+                                contentDescription = null,
+                                tint = palette.fast,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Drop on top card to set as Current Location",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.fast
+                            )
+                        }
+                    }
+                }
+
+                // Candidate Spots Section
+                if (candidates.isEmpty()) {
+                    item(key = "single_spot_prompt") {
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f),
                             border = BorderStroke(1.dp, palette.hairline),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                modifier = Modifier.padding(14.dp),
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.Bolt,
+                                    imageVector = Icons.Filled.ContentPaste,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.secondary,
                                     modifier = Modifier.size(18.dp)
                                 )
-                                Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(12.dp))
                                 Text(
-                                    text = "Paste temporary coordinates above one by one (or bulk lines) to compare cooldowns & pick the fastest jump.",
+                                    text = "Paste coordinates above to compare wait times from ${anchorEval.point.label}.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
                     }
+                } else {
+                    item(key = "next_spots_header") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp, start = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "COMPARE NEXT",
+                                    style = MonoStyles.badge,
+                                    color = palette.mutedText
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "${candidates.size}",
+                                        style = MonoStyles.badge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            if (candidates.size >= 2) {
+                                Surface(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onSortFastest()
+                                    },
+                                    shape = RoundedCornerShape(20.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    border = BorderStroke(1.dp, palette.hairline),
+                                    modifier = Modifier.testTag("sort_fastest_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Sort,
+                                            contentDescription = "Sort by shortest wait",
+                                            tint = MaterialTheme.colorScheme.secondary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text(
+                                            text = "Fastest",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    itemsIndexed(
+                        items = candidates,
+                        key = { _, item -> item.point.id }
+                    ) { idx, evaluated ->
+                        val slotNumber = idx + 2
+                        val isDragging = draggedId == evaluated.point.id
+                        val isExpanded = expandedCardId == evaluated.point.id && !isDragging
+                        val scale by animateFloatAsState(
+                            targetValue = if (isDragging) 1.025f else 1f,
+                            animationSpec = spring(stiffness = 600f),
+                            label = "spot_scale"
+                        )
+
+                        SpotComparisonRow(
+                            evaluated = evaluated,
+                            slotNumber = slotNumber,
+                            distanceUnit = uiState.distanceUnit,
+                            lastLocationLabel = uiState.lastLocationCoord?.label,
+                            isExpanded = isExpanded,
+                            isDragging = isDragging,
+                            onToggleExpand = {
+                                expandedCardId = if (isExpanded) null else evaluated.point.id
+                            },
+                            onJumpHere = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                expandedCardId = null
+                                onJumpToCoordinate(evaluated.point.id)
+                            },
+                            onCompareFromHere = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                expandedCardId = null
+                                onPreviewAsCurrent(evaluated.point.id)
+                            },
+                            onCopyCoords = {
+                                copyToClipboard(evaluated.point.label, evaluated.point.formattedCoords(5))
+                            },
+                            onEdit = { editingCoord = evaluated.point },
+                            onPinAsHome = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                expandedCardId = null
+                                onPinAsPermanent(evaluated.point.id)
+                            },
+                            onDelete = {
+                                expandedCardId = null
+                                onDeleteCoordinate(evaluated.point.id)
+                            },
+                            dragHandleModifier = buildDragModifier(evaluated),
+                            modifier = Modifier
+                                .then(if (!isDragging) Modifier.animateItem() else Modifier)
+                                .zIndex(if (isDragging) 10f else 0f)
+                                .graphicsLayer {
+                                    translationY = if (isDragging) dragOffsetY else 0f
+                                    scaleX = scale
+                                    scaleY = scale
+                                }
+                        )
+                    }
                 }
             }
         }
     }
 
-    // Edit Label & Coordinates Dialog
+    // Dialogs & Options Bottom Sheet
     editingCoord?.let { target ->
         EditCoordinateDialog(
-            title = if (target.id == uiState.permanentCoord?.id) "Edit Permanent Base" else "Edit Coordinate",
+            title = if (target.id == uiState.permanentCoord?.id) "Edit Home Base" else "Edit Coordinate",
             initialLabel = target.label,
             initialCoords = target.formattedCoords(5),
             onDismiss = { editingCoord = null },
             onSave = { newLabel, newRawCoords ->
                 val error = onUpdateCoordinate(target.id, newLabel, newRawCoords)
-                if (error == null) {
-                    editingCoord = null
-                    onShowMessage("Updated ${newLabel.trim()}")
-                }
+                if (error == null) editingCoord = null
                 error
             }
         )
     }
 
-    // Set / Edit Permanent Base Dialog
     if (showPermanentDialog) {
         SetPermanentBaseDialog(
             existing = uiState.permanentCoord,
@@ -546,487 +619,122 @@ fun CompareScreen(
             onClearPermanent = {
                 onClearPermanentBase()
                 showPermanentDialog = false
-                onShowMessage("Removed Permanent Base")
             },
             onSave = { label, rawCoords ->
                 val error = onSetPermanentFromRaw(label, rawCoords)
-                if (error == null) {
-                    showPermanentDialog = false
-                    onShowMessage("Saved Permanent Base")
-                }
+                if (error == null) showPermanentDialog = false
                 error
             }
         )
     }
 
-    // Last Action / Elapsed Credit Bottom Sheet
-    if (showLastActionSheet) {
-        LastActionBottomSheet(
+    if (showOptionsSheet) {
+        CompareOptionsSheet(
+            distanceUnit = uiState.distanceUnit,
+            safetyBufferMinutes = uiState.safetyBufferMinutes,
             elapsedSeconds = uiState.elapsedSinceLastActionSeconds,
-            onDismiss = { showLastActionSheet = false },
-            onSelectMinutesAgo = { mins ->
-                onSetLastActionMinutesAgo(mins)
-                showLastActionSheet = false
-            }
+            hasPermanent = uiState.permanentCoord != null,
+            hasSummary = uiState.evaluatedCoords.size >= 2,
+            onSelectMinutesAgo = onSetLastActionMinutesAgo,
+            onSetSafetyBuffer = onSetSafetyBuffer,
+            onToggleUnit = onToggleUnit,
+            onEditPermanent = { showPermanentDialog = true },
+            onCopySummary = onCopySummary,
+            onDismiss = { showOptionsSheet = false }
         )
     }
 }
 
 @Composable
-private fun ActiveTimerMiniBar(
-    uiState: CoordShiftUiState,
-    onTogglePauseResume: () -> Unit,
-    onOpenTimerTab: () -> Unit
+private fun HomeTopBar(
+    hasTempsOrLast: Boolean,
+    hasActiveModifiers: Boolean,
+    modifierBadge: String,
+    onReset: () -> Unit,
+    onOpenOptions: () -> Unit
 ) {
     val palette = LocalCooldownPalette.current
-    val timer = uiState.timerState
-    val remaining = timer.remainingSeconds(uiState.nowEpochMillis)
-    val tier = CooldownCalculator.tierForCooldownSeconds(remaining)
-    val accent = palette.accentFor(tier)
-
-    Surface(
-        onClick = onOpenTimerTab,
-        shape = RoundedCornerShape(14.dp),
-        color = palette.containerFor(tier).copy(alpha = 0.85f),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("active_timer_mini_bar")
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Timer,
-                    contentDescription = null,
-                    tint = accent,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column {
-                    Text(
-                        text = if (timer.isRunning) "COOLDOWN ACTIVE · ${timer.label}" else "PAUSED · ${timer.label}",
-                        style = MonoStyles.badge,
-                        color = accent,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "Ready at ${
-                            CooldownCalculator.formatReadyTime(uiState.nowEpochMillis + remaining * 1000L)
-                        }",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = CooldownCalculator.formatTimerClock(remaining),
-                    style = MonoStyles.metricLarge,
-                    color = accent
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                IconButton(
-                    onClick = onTogglePauseResume,
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = if (timer.isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (timer.isRunning) "Pause timer" else "Resume timer",
-                        tint = accent,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-        }
-    }
-}
+        Text(
+            text = stringResource(R.string.app_name),
+            style = MaterialTheme.typography.headlineLarge,
+            color = MaterialTheme.colorScheme.onBackground
+        )
 
-@Composable
-private fun CompareHeader(
-    tempCount: Int,
-    distanceUnit: DistanceUnit,
-    safetyBufferMinutes: Int,
-    elapsedSeconds: Int,
-    onToggleUnit: () -> Unit,
-    onCycleBuffer: () -> Unit,
-    onOpenLastAction: () -> Unit
-) {
-    val palette = LocalCooldownPalette.current
-    Column(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = stringResource(R.string.app_name),
-                        style = MaterialTheme.typography.headlineLarge,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    if (tempCount > 0) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        StatusPillBadge(
-                            text = "$tempCount TEMP",
-                            accentColor = MaterialTheme.colorScheme.secondary,
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            showDot = false
+            if (hasTempsOrLast) {
+                Surface(
+                    onClick = onReset,
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, palette.hairline),
+                    modifier = Modifier.testTag("reset_to_permanent_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.RestartAlt,
+                            contentDescription = "Clear temporary coordinates",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = "Clear",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
-                Text(
-                    text = "Compare temp coords · Jump triggers cooldown & base return",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Compact technical control chips: Elapsed Time, Safety Buffer, Unit
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val hasElapsed = elapsedSeconds > 0
-            Surface(
-                onClick = onOpenLastAction,
-                shape = RoundedCornerShape(10.dp),
-                color = if (hasElapsed) palette.fastContainer else MaterialTheme.colorScheme.surface,
-                border = BorderStroke(
-                    1.dp,
-                    if (hasElapsed) palette.fast.copy(alpha = 0.45f) else palette.hairline
-                ),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("last_action_chip")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.History,
-                        contentDescription = "Last action elapsed time",
-                        tint = if (hasElapsed) palette.fast else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (hasElapsed) {
-                            "Waited ${CooldownCalculator.formatCooldown(elapsedSeconds)}"
-                        } else {
-                            "Last action: Now"
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (hasElapsed) palette.fast else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
             }
 
             Surface(
-                onClick = onCycleBuffer,
-                shape = RoundedCornerShape(10.dp),
-                color = if (safetyBufferMinutes > 0) {
+                onClick = onOpenOptions,
+                shape = RoundedCornerShape(12.dp),
+                color = if (hasActiveModifiers) {
                     MaterialTheme.colorScheme.secondaryContainer
                 } else {
                     MaterialTheme.colorScheme.surface
                 },
                 border = BorderStroke(
                     1.dp,
-                    if (safetyBufferMinutes > 0) {
-                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+                    if (hasActiveModifiers) {
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)
                     } else {
                         palette.hairline
                     }
                 ),
-                modifier = Modifier.testTag("buffer_chip")
+                modifier = Modifier.testTag("compare_options_button")
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Shield,
-                        contentDescription = "Safety buffer",
-                        tint = if (safetyBufferMinutes > 0) {
+                        imageVector = Icons.Filled.Tune,
+                        contentDescription = "Comparison options",
+                        tint = if (hasActiveModifiers) {
                             MaterialTheme.colorScheme.secondary
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(16.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "+${safetyBufferMinutes}m",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (safetyBufferMinutes > 0) {
-                            MaterialTheme.colorScheme.secondary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        }
-                    )
-                }
-            }
-
-            Surface(
-                onClick = onToggleUnit,
-                shape = RoundedCornerShape(10.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, palette.hairline),
-                modifier = Modifier.testTag("unit_toggle_chip")
-            ) {
-                Text(
-                    text = distanceUnit.shortLabel.uppercase(),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SmartPasteDock(
-    inputText: String,
-    errorMessage: String?,
-    onInputChanged: (String) -> Unit,
-    onPasteClipboard: () -> Unit,
-    onAddManual: () -> Unit
-) {
-    val palette = LocalCooldownPalette.current
-    Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (errorMessage != null) MaterialTheme.colorScheme.error else palette.hairline
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(
-                    value = inputText,
-                    onValueChange = onInputChanged,
-                    placeholder = {
+                    if (hasActiveModifiers && modifierBadge.isNotEmpty()) {
+                        Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = stringResource(R.string.input_placeholder),
-                            style = MonoStyles.coordinate,
-                            color = palette.mutedText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    textStyle = MonoStyles.coordinate.copy(
-                        color = MaterialTheme.colorScheme.onSurface
-                    ),
-                    singleLine = false,
-                    maxLines = 3,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { onAddManual() }),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = palette.hairline,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("coord_input_field")
-                )
-
-                if (inputText.isNotBlank()) {
-                    Button(
-                        onClick = onAddManual,
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("add_coord_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = stringResource(R.string.action_add),
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                } else {
-                    Button(
-                        onClick = onPasteClipboard,
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("paste_clipboard_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.ContentPaste,
-                            contentDescription = stringResource(R.string.action_paste),
-                            modifier = Modifier.size(17.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = stringResource(R.string.action_paste),
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                    }
-                }
-            }
-
-            if (errorMessage != null) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = errorMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ComparisonTelemetryStrip(
-    bestCandidate: EvaluatedCoord?,
-    farthestCandidate: EvaluatedCoord?,
-    distanceUnit: DistanceUnit,
-    candidateCount: Int,
-    hasPermanent: Boolean,
-    hasTemps: Boolean,
-    onSortFastest: () -> Unit,
-    onCopySummary: () -> Unit,
-    onClearTemps: () -> Unit
-) {
-    val palette = LocalCooldownPalette.current
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, palette.hairline),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "LOWEST COOLDOWN",
-                    style = MonoStyles.badge,
-                    color = palette.mutedText
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                if (bestCandidate != null) {
-                    val waitLabel = if (bestCandidate.remainingCooldownSeconds == 0) {
-                        "READY NOW"
-                    } else {
-                        CooldownCalculator.formatCooldown(bestCandidate.remainingCooldownSeconds)
-                    }
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Text(
-                            text = waitLabel,
-                            style = MonoStyles.metricLarge,
-                            color = palette.accentFor(bestCandidate.tier)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "${bestCandidate.point.label} · ${
-                                CooldownCalculator.formatDistance(
-                                    bestCandidate.distanceKm,
-                                    distanceUnit
-                                )
-                            }",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(bottom = 3.dp)
-                        )
-                    }
-                    if (farthestCandidate != null && bestCandidate.savingsVsFarthestSeconds >= 60) {
-                        Text(
-                            text = "Saves ${
-                                CooldownCalculator.formatCooldown(bestCandidate.savingsVsFarthestSeconds)
-                            } vs farthest",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = palette.fast
-                        )
-                    }
-                }
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                if (candidateCount >= 2) {
-                    FilledTonalButton(
-                        onClick = onSortFastest,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-                        modifier = Modifier.testTag("sort_fastest_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Sort,
-                            contentDescription = "Sort by shortest cooldown",
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.action_sort_fastest),
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    }
-                }
-                IconButton(
-                    onClick = onCopySummary,
-                    modifier = Modifier.testTag("copy_summary_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.ContentCopy,
-                        contentDescription = "Copy comparison summary",
-                        tint = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                if (hasTemps) {
-                    IconButton(
-                        onClick = onClearTemps,
-                        modifier = Modifier.testTag("clear_all_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.DeleteOutline,
-                            contentDescription = if (hasPermanent) "Clear temporary coordinates" else "Clear all",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(19.dp)
+                            text = modifierBadge,
+                            style = MonoStyles.badge,
+                            color = MaterialTheme.colorScheme.secondary
                         )
                     }
                 }
@@ -1035,278 +743,146 @@ private fun ComparisonTelemetryStrip(
     }
 }
 
+/**
+ * Unified Hero "NOW" Card:
+ * Houses Mode Switcher (Home | Temp), Current Location, Active Cooldown Countdown (with live progress bar),
+ * and 1-tap Return Home — eliminating multiple stacked boxes and duplicate clocks.
+ */
 @Composable
-private fun CoordinateCompareCard(
-    evaluated: EvaluatedCoord,
-    slotNumber: Int,
-    distanceUnit: DistanceUnit,
-    permanentLabel: String?,
-    lastLocationLabel: String?,
-    hasElapsedCredit: Boolean,
+private fun HeroNowCard(
+    anchor: EvaluatedCoord,
+    uiState: CoordShiftUiState,
     isDragging: Boolean,
-    onPreviewAsCurrent: () -> Unit,
-    onJumpHere: () -> Unit,
-    onPinAsPermanent: () -> Unit,
-    onCopy: () -> Unit,
-    onEditLabel: () -> Unit,
-    onDelete: () -> Unit,
-    dragHandleModifier: Modifier,
+    onSwitchToPermanent: () -> Unit,
+    onSwitchToTemp: () -> Unit,
+    onOpenSetHome: () -> Unit,
+    onCopyCoords: () -> Unit,
+    onEditAnchor: () -> Unit,
+    onPinAnchorAsHome: () -> Unit,
+    onOpenTimerTab: () -> Unit,
+    onToggleTimerPauseResume: () -> Unit,
+    onReturnHome: () -> Unit,
+    onClearLastLocation: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalCooldownPalette.current
-    val tierAccent = if (evaluated.isCurrent) palette.fast else palette.accentFor(evaluated.tier)
-    val tierContainer = if (evaluated.isCurrent) palette.fastContainer else palette.containerFor(evaluated.tier)
+    val perm = uiState.permanentCoord
+    val hasTemps = uiState.tempCount > 0
+    val timer = uiState.timerState
+    val timerRemaining = timer.remainingSeconds(uiState.nowEpochMillis)
+    val returnInfo = uiState.returnToPermanentInfo
 
-    val borderColor = when {
-        isDragging -> MaterialTheme.colorScheme.primary
-        evaluated.isCurrent && evaluated.isPermanent -> palette.fast.copy(alpha = 0.7f)
-        evaluated.isCurrent -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f)
-        evaluated.isPermanent -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
-        evaluated.isBestPick -> palette.fast.copy(alpha = 0.45f)
-        else -> palette.hairline
-    }
-
-    val cardBrush = when {
-        evaluated.isCurrent && evaluated.isPermanent -> Brush.linearGradient(
-            colors = listOf(
-                palette.fastContainer.copy(alpha = 0.55f),
-                MaterialTheme.colorScheme.surface
-            )
-        )
-        evaluated.isCurrent -> Brush.linearGradient(
-            colors = listOf(
-                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
-                MaterialTheme.colorScheme.surface
-            )
-        )
-        else -> Brush.linearGradient(
-            colors = listOf(
-                MaterialTheme.colorScheme.surface,
-                MaterialTheme.colorScheme.surface
-            )
-        )
-    }
+    val accent = if (anchor.isPermanent) palette.fast else MaterialTheme.colorScheme.secondary
+    val glowColor = accent.copy(alpha = 0.14f)
 
     Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = Color.Transparent,
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surface,
         shadowElevation = if (isDragging) 14.dp else 0.dp,
-        border = BorderStroke(if (evaluated.isCurrent || isDragging) 1.5.dp else 1.dp, borderColor),
+        border = BorderStroke(
+            width = if (isDragging) 1.5.dp else 1.dp,
+            color = if (isDragging) MaterialTheme.colorScheme.primary else accent.copy(alpha = 0.45f)
+        ),
         modifier = modifier
             .fillMaxWidth()
-            .testTag(if (evaluated.isCurrent) "current_anchor_card" else "candidate_card_$slotNumber")
+            .testTag("current_anchor_card")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(cardBrush)
-                .padding(start = 4.dp, end = 12.dp, top = 12.dp, bottom = 10.dp)
+                .drawBehind {
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(glowColor, Color.Transparent),
+                            center = Offset(size.width * 0.15f, 0f),
+                            radius = size.width * 0.95f
+                        )
+                    )
+                }
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Top Row: Status indicator + Compact Inline Home|Temp Switcher
             Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Dedicated tactile Drag Handle
-                Box(
-                    modifier = dragHandleModifier
-                        .testTag("drag_handle_${evaluated.point.id}"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.DragIndicator,
-                        contentDescription = stringResource(R.string.action_drag_reorder),
-                        tint = if (isDragging) MaterialTheme.colorScheme.primary else palette.mutedText,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                // Center Metadata: Badges, Label, Coordinates
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        if (evaluated.isCurrent) {
-                            StatusPillBadge(
-                                text = if (evaluated.isPermanent) "CURRENT · PERM" else "CURRENT · TEMP",
-                                accentColor = if (evaluated.isPermanent) palette.fast else MaterialTheme.colorScheme.secondary,
-                                containerColor = if (evaluated.isPermanent) palette.fastContainer else MaterialTheme.colorScheme.secondaryContainer,
-                                showDot = true
-                            )
-                        } else {
-                            if (evaluated.isPermanent) {
-                                StatusPillBadge(
-                                    text = "PERMANENT",
-                                    accentColor = MaterialTheme.colorScheme.secondary,
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    showDot = false
-                                )
-                            } else if (evaluated.isBestPick) {
-                                StatusPillBadge(
-                                    text = stringResource(R.string.badge_best),
-                                    accentColor = palette.fast,
-                                    containerColor = palette.fastContainer,
-                                    showDot = true
-                                )
-                            } else {
-                                Text(
-                                    text = "#$slotNumber",
-                                    style = MonoStyles.badge,
-                                    color = palette.mutedText
-                                )
-                            }
-
-                            if (evaluated.isLastLocation) {
-                                StatusPillBadge(
-                                    text = "LAST",
-                                    accentColor = MaterialTheme.colorScheme.tertiary,
-                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                    showDot = false
-                                )
-                            } else if (evaluated.remainingCooldownSeconds == 0) {
-                                StatusPillBadge(
-                                    text = stringResource(R.string.badge_ready),
-                                    accentColor = palette.fast,
-                                    containerColor = palette.fastContainer,
-                                    showDot = false
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable(onClick = onEditLabel)
-                    ) {
-                        Text(
-                            text = evaluated.point.label,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Icon(
-                            imageVector = Icons.Filled.Edit,
-                            contentDescription = stringResource(R.string.action_edit_label),
-                            tint = palette.mutedText,
-                            modifier = Modifier.size(13.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(accent)
+                    )
+                    Spacer(modifier = Modifier.width(7.dp))
                     Text(
-                        text = evaluated.point.formattedCoords(5),
-                        style = MonoStyles.coordinate,
-                        color = MaterialTheme.colorScheme.secondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        text = if (anchor.isPermanent) "AT HOME" else "CURRENT SPOT",
+                        style = MonoStyles.badge,
+                        color = accent
                     )
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
-
-                // Right Telemetry Column
-                if (evaluated.isCurrent) {
-                    Column(horizontalAlignment = Alignment.End) {
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (evaluated.isPermanent) palette.fastContainer
-                                    else MaterialTheme.colorScheme.secondaryContainer
-                                )
-                                .border(
-                                    1.dp,
-                                    (if (evaluated.isPermanent) palette.fast else MaterialTheme.colorScheme.secondary)
-                                        .copy(alpha = 0.45f),
-                                    CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
+                if (perm != null) {
+                    // Compact inline Home | Temp segmented pill
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f))
+                            .border(1.dp, palette.hairline, RoundedCornerShape(10.dp))
+                            .padding(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        val permActive = uiState.isCurrentPermanent
+                        val tempActive = !permActive
+                        Surface(
+                            onClick = onSwitchToPermanent,
+                            shape = RoundedCornerShape(7.dp),
+                            color = if (permActive) palette.fastContainer else Color.Transparent,
+                            modifier = Modifier.testTag("switch_mode_permanent")
                         ) {
-                            Icon(
-                                imageVector = if (evaluated.isPermanent) Icons.Filled.Home else Icons.Filled.MyLocation,
-                                contentDescription = "Active current anchor",
-                                tint = if (evaluated.isPermanent) palette.fast else MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(20.dp)
+                            Text(
+                                text = "Home",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = if (permActive) FontWeight.Bold else FontWeight.Medium
+                                ),
+                                color = if (permActive) palette.fast else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "ORIGIN",
-                            style = MonoStyles.badge,
-                            color = if (evaluated.isPermanent) palette.fast else MaterialTheme.colorScheme.secondary
-                        )
+                        Surface(
+                            onClick = { if (hasTemps) onSwitchToTemp() },
+                            enabled = hasTemps,
+                            shape = RoundedCornerShape(7.dp),
+                            color = if (tempActive) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                            modifier = Modifier.testTag("switch_mode_temp")
+                        ) {
+                            Text(
+                                text = "Temp",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = if (tempActive) FontWeight.Bold else FontWeight.Medium
+                                ),
+                                color = when {
+                                    tempActive -> MaterialTheme.colorScheme.secondary
+                                    hasTemps -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    else -> palette.mutedText.copy(alpha = 0.45f)
+                                },
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
                     }
                 } else {
-                    Column(horizontalAlignment = Alignment.End) {
-                        val cooldownDisplay = if (evaluated.remainingCooldownSeconds == 0) {
-                            "0 min"
-                        } else {
-                            CooldownCalculator.formatCooldown(evaluated.remainingCooldownSeconds)
-                        }
-                        Text(
-                            text = cooldownDisplay,
-                            style = MonoStyles.metricLarge,
-                            color = tierAccent
-                        )
-                        if (hasElapsedCredit && evaluated.bufferedCooldownSeconds > evaluated.remainingCooldownSeconds) {
-                            Text(
-                                text = "raw ${CooldownCalculator.formatCooldown(evaluated.bufferedCooldownSeconds)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.mutedText
-                            )
-                        } else if (evaluated.remainingCooldownSeconds > 0) {
-                            Text(
-                                text = "Ready ${CooldownCalculator.formatReadyTime(evaluated.readyAtEpochMillis)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        } else {
-                            Text(
-                                text = "Jump anytime",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.fast
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(5.dp))
-                        CooldownSeverityBar(
-                            cooldownSeconds = evaluated.remainingCooldownSeconds,
-                            tier = evaluated.tier,
-                            modifier = Modifier
-                                .width(88.dp)
-                                .height(4.dp)
-                        )
-                    }
-                }
-            }
-
-            // Dual Reference Comparison Strip:
-            // 1) When on a Temp Current -> show cooldown back to Permanent Base
-            // 2) When on Permanent -> show cooldown from Last Temp Location
-            val hasPermDual = evaluated.cooldownToPermanentSeconds != null && evaluated.distanceToPermanentKm != null
-            val hasLastDual = evaluated.cooldownFromLastLocationSeconds != null && evaluated.distanceFromLastLocationKm != null
-            if (hasPermDual || hasLastDual) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 10.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-                        .padding(horizontal = 9.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    if (hasPermDual) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        onClick = onOpenSetHome,
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+                        modifier = Modifier.testTag("set_permanent_base_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Icon(
                                 imageVector = Icons.Filled.Home,
                                 contentDescription = null,
@@ -1315,195 +891,658 @@ private fun CoordinateCompareCard(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "To ${permanentLabel ?: "Perm"}: ${
-                                    CooldownCalculator.formatCooldown(evaluated.cooldownToPermanentSeconds!!)
-                                } (${
-                                    CooldownCalculator.formatDistance(
-                                        evaluated.distanceToPermanentKm!!,
-                                        distanceUnit
-                                    )
-                                })",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                    if (hasLastDual) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Filled.Undo,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            val lastCd = evaluated.cooldownFromLastLocationSeconds!!
-                            Text(
-                                text = "From Last (${lastLocationLabel ?: "Prev"}): ${
-                                    if (lastCd == 0) "Ready" else CooldownCalculator.formatCooldown(lastCd)
-                                } (${
-                                    CooldownCalculator.formatDistance(
-                                        evaluated.distanceFromLastLocationKm!!,
-                                        distanceUnit
-                                    )
-                                })",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.tertiary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                text = "Set Home",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.secondary
                             )
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider(
-                thickness = 1.dp,
-                color = palette.hairline.copy(alpha = 0.5f),
-                modifier = Modifier.padding(start = 10.dp)
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // Footer Telemetry + 1-Tap Actions
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                if (evaluated.isCurrent) {
+            // Hero Identity: Large Place Name + Tappable Copy Coords + Quick Edit/Pin
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
                     Text(
-                        text = "Measuring cooldowns from here",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = anchor.point.label,
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                } else {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            text = CooldownCalculator.formatDistance(
-                                evaluated.distanceKm,
-                                distanceUnit
-                            ),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!anchor.isPermanent && perm == null) {
+                            IconButton(
+                                onClick = onPinAnchorAsHome,
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.PushPin,
+                                    contentDescription = "Save as Permanent Home",
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = onEditAnchor,
+                            modifier = Modifier.size(34.dp)
+                        ) {
                             Icon(
-                                imageVector = Icons.Filled.Explore,
-                                contentDescription = null,
-                                tint = palette.mutedText,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = "${evaluated.cardinalDirection} ${evaluated.bearingDegrees.toInt()}°",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                imageVector = Icons.Filled.Edit,
+                                contentDescription = "Edit current location",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
                 }
 
+                // Tappable coordinate chip for 1-tap copy
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onCopyCoords)
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (!evaluated.isCurrent) {
-                        // Primary action: JUMP (switches Current & triggers cooldown automatically)
-                        Surface(
-                            onClick = onJumpHere,
-                            shape = RoundedCornerShape(8.dp),
-                            color = tierContainer,
-                            border = BorderStroke(1.dp, tierAccent.copy(alpha = 0.45f)),
-                            modifier = Modifier.testTag("jump_coord_${evaluated.point.id}")
+                    Text(
+                        text = anchor.point.formattedCoords(5),
+                        style = MonoStyles.coordinate,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = "Copy coordinates",
+                        tint = palette.mutedText,
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+            }
+
+            // Contextual Active Cooldown Strip (with live drain progress line)
+            if (timer.isActive) {
+                val tTier = CooldownCalculator.tierForCooldownSeconds(timerRemaining)
+                val tAccent = palette.accentFor(tTier)
+                val fraction = (timerRemaining.toFloat() / timer.totalDurationSeconds.coerceAtLeast(1).toFloat())
+                    .coerceIn(0f, 1f)
+                val animatedFraction by animateFloatAsState(
+                    targetValue = fraction,
+                    animationSpec = spring(stiffness = 300f),
+                    label = "timer_progress"
+                )
+
+                Surface(
+                    onClick = onOpenTimerTab,
+                    shape = RoundedCornerShape(14.dp),
+                    color = palette.containerFor(tTier).copy(alpha = 0.75f),
+                    border = BorderStroke(1.dp, tAccent.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("active_timer_mini_bar")
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
-                                    imageVector = Icons.Filled.Bolt,
-                                    contentDescription = "Jump and trigger cooldown",
-                                    tint = tierAccent,
-                                    modifier = Modifier.size(13.dp)
+                                    imageVector = Icons.Filled.Timer,
+                                    contentDescription = null,
+                                    tint = tAccent,
+                                    modifier = Modifier.size(19.dp)
                                 )
-                                Spacer(modifier = Modifier.width(3.dp))
+                                Spacer(modifier = Modifier.width(9.dp))
+                                Column {
+                                    Text(
+                                        text = if (timer.isRunning) "WAIT BEFORE ACTING" else "COOLDOWN PAUSED",
+                                        style = MonoStyles.badge,
+                                        color = tAccent
+                                    )
+                                    Text(
+                                        text = "Ready at ${
+                                            CooldownCalculator.formatReadyTime(
+                                                uiState.nowEpochMillis + timerRemaining * 1000L
+                                            )
+                                        }",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = "Jump",
-                                    style = MonoStyles.badge,
-                                    color = tierAccent
+                                    text = CooldownCalculator.formatTimerClock(timerRemaining),
+                                    style = MonoStyles.metricLarge,
+                                    color = tAccent
                                 )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(tAccent.copy(alpha = 0.16f))
+                                        .clickable(onClick = onToggleTimerPauseResume),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (timer.isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                        contentDescription = if (timer.isRunning) "Pause timer" else "Resume timer",
+                                        tint = tAccent,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
 
-                        // Secondary quick action: Preview as Current without starting timer
-                        IconButton(
-                            onClick = onPreviewAsCurrent,
+                        // Sleek live draining progress bar
+                        Box(
                             modifier = Modifier
-                                .size(34.dp)
-                                .testTag("set_current_${evaluated.point.id}")
+                                .fillMaxWidth()
+                                .height(3.dp)
+                                .background(tAccent.copy(alpha = 0.18f))
                         ) {
-                            Icon(
-                                imageVector = Icons.Filled.SwapVert,
-                                contentDescription = "Compare from here without timer",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(17.dp)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(animatedFraction)
+                                    .height(3.dp)
+                                    .background(tAccent)
                             )
                         }
                     }
+                }
+            }
 
-                    // Pin as Permanent Base button on non-permanent cards
-                    if (!evaluated.isPermanent) {
-                        IconButton(
-                            onClick = onPinAsPermanent,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .testTag("pin_permanent_${evaluated.point.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.PushPin,
-                                contentDescription = "Set as Permanent Base",
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(15.dp)
-                            )
-                        }
-                    }
-
-                    IconButton(
-                        onClick = onCopy,
-                        modifier = Modifier
-                            .size(34.dp)
-                            .testTag("copy_coord_${evaluated.point.id}")
+            // Contextual Footer: Return Home shortcut (when on Temp) OR Last Visited (when at Home)
+            if (returnInfo != null && perm != null) {
+                val rAccent = palette.accentFor(returnInfo.tier)
+                HorizontalDivider(color = palette.hairline.copy(alpha = 0.55f))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.ContentCopy,
-                            contentDescription = stringResource(R.string.action_copy_coords),
+                            imageVector = Icons.Filled.Home,
+                            contentDescription = null,
+                            tint = rAccent,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(7.dp))
+                        Column {
+                            Text(
+                                text = "Return to ${perm.label}",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${
+                                    if (returnInfo.remainingCooldownSeconds == 0) "Ready now"
+                                    else CooldownCalculator.formatCooldown(returnInfo.remainingCooldownSeconds)
+                                } · ${
+                                    CooldownCalculator.formatDistance(
+                                        returnInfo.distanceKm,
+                                        uiState.distanceUnit
+                                    )
+                                }",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = rAccent
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        onClick = onReturnHome,
+                        shape = RoundedCornerShape(10.dp),
+                        color = palette.containerFor(returnInfo.tier),
+                        border = BorderStroke(1.dp, rAccent.copy(alpha = 0.45f)),
+                        modifier = Modifier.testTag("return_to_permanent_jump_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Return",
+                                style = MonoStyles.badge,
+                                color = rAccent
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = null,
+                                tint = rAccent,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+                }
+            } else if (uiState.isCurrentPermanent && uiState.lastLocationCoord != null) {
+                HorizontalDivider(color = palette.hairline.copy(alpha = 0.55f))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Also comparing from last spot: ${uiState.lastLocationCoord.label}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = onClearLastLocation,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Clear last spot",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickPasteCapsule(
+    inputText: String,
+    errorMessage: String?,
+    onInputChanged: (String) -> Unit,
+    onPasteClipboard: () -> Unit,
+    onAddManual: () -> Unit
+) {
+    val palette = LocalCooldownPalette.current
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = inputText,
+                onValueChange = onInputChanged,
+                placeholder = {
+                    Text(
+                        text = "Paste coordinates or Maps link…",
+                        style = MonoStyles.coordinate,
+                        color = palette.mutedText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                textStyle = MonoStyles.coordinate.copy(color = MaterialTheme.colorScheme.onSurface),
+                singleLine = false,
+                maxLines = 3,
+                isError = errorMessage != null,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onAddManual() }),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = palette.hairline,
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                ),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("coord_input_field")
+            )
+
+            if (inputText.isNotBlank()) {
+                Button(
+                    onClick = onAddManual,
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("add_coord_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = stringResource(R.string.action_add),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            } else {
+                Button(
+                    onClick = onPasteClipboard,
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("paste_clipboard_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentPaste,
+                        contentDescription = stringResource(R.string.action_paste),
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = stringResource(R.string.action_paste),
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+        }
+
+        if (errorMessage != null) {
+            Spacer(modifier = Modifier.height(5.dp))
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(start = 6.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Swiss-Minimal Spot Card with Progressive Disclosure:
+ * - Collapsed (default): Thin severity bar, Place Name + optional single badge, Distance & Ready clock,
+ *   big tabular Wait Time, and 1-tap Jump pill.
+ * - Tap card body: Smoothly reveals full coordinates, compass bearing, and labeled action chips
+ *   (Compare, Copy, Edit, Set Home, Remove).
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SpotComparisonRow(
+    evaluated: EvaluatedCoord,
+    slotNumber: Int,
+    distanceUnit: DistanceUnit,
+    lastLocationLabel: String?,
+    isExpanded: Boolean,
+    isDragging: Boolean,
+    onToggleExpand: () -> Unit,
+    onJumpHere: () -> Unit,
+    onCompareFromHere: () -> Unit,
+    onCopyCoords: () -> Unit,
+    onEdit: () -> Unit,
+    onPinAsHome: () -> Unit,
+    onDelete: () -> Unit,
+    dragHandleModifier: Modifier,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalCooldownPalette.current
+    val tierAccent = palette.accentFor(evaluated.tier)
+    val tierContainer = palette.containerFor(evaluated.tier)
+
+    val borderColor = when {
+        isDragging -> MaterialTheme.colorScheme.primary
+        isExpanded -> tierAccent.copy(alpha = 0.55f)
+        evaluated.isBestPick -> palette.fast.copy(alpha = 0.5f)
+        evaluated.isPermanent -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)
+        else -> palette.hairline
+    }
+
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = if (isDragging) 12.dp else 0.dp,
+        border = BorderStroke(if (isDragging || evaluated.isBestPick || isExpanded) 1.25.dp else 1.dp, borderColor),
+        modifier = modifier
+            .fillMaxWidth()
+            .animateContentSize(animationSpec = spring(stiffness = 500f))
+            .testTag("candidate_card_$slotNumber")
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Main Scannable Row (tap body to expand/collapse details)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleExpand)
+                    .padding(start = 2.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Drag Grip
+                Box(
+                    modifier = dragHandleModifier.testTag("drag_handle_${evaluated.point.id}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.DragIndicator,
+                        contentDescription = stringResource(R.string.action_drag_reorder),
+                        tint = if (isDragging) MaterialTheme.colorScheme.primary else palette.mutedText.copy(alpha = 0.65f),
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+
+                // Semantic Severity Accent Bar
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .height(38.dp)
+                        .clip(CircleShape)
+                        .background(tierAccent)
+                )
+
+                Spacer(modifier = Modifier.width(10.dp))
+
+                // Left Info Column: Name (+ max 1 pill) + Distance/Ready clock + optional dual ref
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = evaluated.point.label,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        when {
+                            evaluated.isPermanent -> StatusPillBadge(
+                                text = "HOME",
+                                accentColor = MaterialTheme.colorScheme.secondary,
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                showDot = false
+                            )
+                            evaluated.isBestPick -> StatusPillBadge(
+                                text = "BEST",
+                                accentColor = palette.fast,
+                                containerColor = palette.fastContainer,
+                                showDot = true
+                            )
+                            evaluated.isLastLocation -> StatusPillBadge(
+                                text = "LAST",
+                                accentColor = MaterialTheme.colorScheme.tertiary,
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                showDot = false
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(3.dp))
+
+                    val readySub = if (evaluated.remainingCooldownSeconds == 0) {
+                        "Ready now"
+                    } else {
+                        "Ready ${CooldownCalculator.formatReadyTime(evaluated.readyAtEpochMillis)}"
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "${CooldownCalculator.formatDistance(evaluated.distanceKm, distanceUnit)} · $readySub",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Icon(
+                            imageVector = if (isExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                            contentDescription = if (isExpanded) "Hide actions" else "Show actions",
+                            tint = palette.mutedText,
                             modifier = Modifier.size(15.dp)
                         )
                     }
 
-                    if (!evaluated.isPermanent) {
-                        IconButton(
-                            onClick = onDelete,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .testTag("delete_coord_${evaluated.point.id}")
+                    // Compact 1-line secondary reference ONLY when applicable
+                    val secondaryHint = when {
+                        evaluated.cooldownFromLastLocationSeconds != null -> {
+                            val cd = evaluated.cooldownFromLastLocationSeconds
+                            val label = lastLocationLabel ?: "Last"
+                            "From $label: ${if (cd == 0) "Ready" else CooldownCalculator.formatCooldown(cd)}"
+                        }
+                        evaluated.cooldownToPermanentSeconds != null -> {
+                            val cd = evaluated.cooldownToPermanentSeconds
+                            "Home return: ${if (cd == 0) "Ready" else CooldownCalculator.formatCooldown(cd)}"
+                        }
+                        else -> null
+                    }
+                    if (secondaryHint != null) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = secondaryHint,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(10.dp))
+
+                // Right Column: Big unmistakable wait time + 1-tap Jump button
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = if (evaluated.remainingCooldownSeconds == 0) {
+                            "Ready"
+                        } else {
+                            CooldownCalculator.formatCooldown(evaluated.remainingCooldownSeconds)
+                        },
+                        style = MonoStyles.metricLarge,
+                        color = tierAccent
+                    )
+
+                    Surface(
+                        onClick = onJumpHere,
+                        shape = RoundedCornerShape(10.dp),
+                        color = tierContainer,
+                        border = BorderStroke(1.dp, tierAccent.copy(alpha = 0.45f)),
+                        modifier = Modifier.testTag("jump_coord_${evaluated.point.id}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.DeleteOutline,
-                                contentDescription = stringResource(R.string.action_delete_coord),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
+                                imageVector = Icons.Filled.Bolt,
+                                contentDescription = "Jump and start cooldown",
+                                tint = tierAccent,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "Jump",
+                                style = MonoStyles.badge,
+                                color = tierAccent
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Expandable Progressive-Disclosure Action Drawer
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = evaluated.point.formattedCoords(5),
+                            style = MonoStyles.coordinate,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "${evaluated.cardinalDirection} ${evaluated.bearingDegrees.toInt()}°",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        InlineActionChip(
+                            label = "Compare here",
+                            icon = Icons.Filled.SwapVert,
+                            onClick = onCompareFromHere,
+                            testTag = "set_current_${evaluated.point.id}"
+                        )
+                        InlineActionChip(
+                            label = "Copy",
+                            icon = Icons.Filled.ContentCopy,
+                            onClick = onCopyCoords,
+                            testTag = "copy_coord_${evaluated.point.id}"
+                        )
+                        InlineActionChip(
+                            label = "Edit",
+                            icon = Icons.Filled.Edit,
+                            onClick = onEdit
+                        )
+                        if (!evaluated.isPermanent) {
+                            InlineActionChip(
+                                label = "Set Home",
+                                icon = Icons.Filled.PushPin,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                onClick = onPinAsHome,
+                                testTag = "pin_permanent_${evaluated.point.id}"
+                            )
+                            InlineActionChip(
+                                label = "Remove",
+                                icon = Icons.Filled.DeleteOutline,
+                                tint = MaterialTheme.colorScheme.error,
+                                onClick = onDelete,
+                                testTag = "delete_coord_${evaluated.point.id}"
                             )
                         }
                     }
@@ -1514,9 +1553,46 @@ private fun CoordinateCompareCard(
 }
 
 @Composable
-private fun EmptyCompareState(
-    onPasteClipboard: () -> Unit,
-    onLoadDemo: () -> Unit
+private fun InlineActionChip(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    testTag: String? = null
+) {
+    val palette = LocalCooldownPalette.current
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, palette.hairline),
+        modifier = if (testTag != null) Modifier.testTag(testTag) else Modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = tint
+            )
+        }
+    }
+}
+
+@Composable
+private fun WelcomeEmptyDeck(
+    onSetHome: () -> Unit,
+    onPasteNow: () -> Unit,
+    onLoadSample: () -> Unit
 ) {
     val palette = LocalCooldownPalette.current
     Surface(
@@ -1535,7 +1611,7 @@ private fun EmptyCompareState(
         ) {
             Box(
                 modifier = Modifier
-                    .size(58.dp)
+                    .size(54.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(palette.fastContainer)
                     .border(1.dp, palette.fast.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
@@ -1545,14 +1621,14 @@ private fun EmptyCompareState(
                     imageVector = Icons.Filled.MyLocation,
                     contentDescription = null,
                     tint = palette.fast,
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(26.dp)
                 )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = stringResource(R.string.empty_title),
+                text = "Compare wait times instantly",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -1560,329 +1636,60 @@ private fun EmptyCompareState(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Set your Permanent Base above, then paste temporary coordinates one by one. Tap Jump on the best spot to trigger cooldown & track return wait.",
+                text = "Save your Permanent Home, paste temporary spots, and tap Jump on the fastest option.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+            Button(
+                onClick = onSetHome,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("set_permanent_base_button")
             ) {
-                listOf("lat, lng", "Bulk Lines", "Maps URL", "DMS").forEach { fmt ->
-                    StatusPillBadge(
-                        text = fmt,
-                        accentColor = MaterialTheme.colorScheme.secondary,
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        showDot = false
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Filled.Home,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Set Permanent Home")
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Button(
-                    onClick = onPasteClipboard,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("empty_paste_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.ContentPaste,
-                        contentDescription = null,
-                        modifier = Modifier.size(17.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Paste Now")
-                }
-
                 OutlinedButton(
-                    onClick = onLoadDemo,
-                    shape = RoundedCornerShape(12.dp),
+                    onClick = onPasteNow,
+                    shape = RoundedCornerShape(14.dp),
                     border = BorderStroke(1.dp, palette.hairline),
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
+                        .height(46.dp)
+                        .testTag("empty_paste_button")
+                ) {
+                    Text("Paste Coords")
+                }
+
+                OutlinedButton(
+                    onClick = onLoadSample,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, palette.hairline),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp)
                         .testTag("load_demo_button")
                 ) {
-                    Text(
-                        text = "Try Sample Trio",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Text("Sample Trio")
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun SetPermanentBaseDialog(
-    existing: CoordPoint?,
-    onPasteFromClipboard: () -> String?,
-    onDismiss: () -> Unit,
-    onClearPermanent: () -> Unit,
-    onSave: (String, String) -> String?
-) {
-    var labelText by remember(existing) { mutableStateOf(existing?.label ?: "Home Base") }
-    var coordsText by remember(existing) { mutableStateOf(existing?.formattedCoords(5) ?: "") }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = if (existing == null) "Set Permanent Base" else "Edit Permanent Base",
-                style = MaterialTheme.typography.titleLarge
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Saved permanently across restarts. Temporary coordinates clear cleanly back to this base.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedTextField(
-                    value = labelText,
-                    onValueChange = {
-                        labelText = it.take(32)
-                        errorMsg = null
-                    },
-                    label = { Text("Base Label") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("perm_label_input")
-                )
-                OutlinedTextField(
-                    value = coordsText,
-                    onValueChange = {
-                        coordsText = it
-                        errorMsg = null
-                    },
-                    label = { Text("Coordinates (lat, lng)") },
-                    textStyle = MonoStyles.coordinate,
-                    singleLine = true,
-                    isError = errorMsg != null,
-                    trailingIcon = {
-                        IconButton(
-                            onClick = {
-                                val clip = onPasteFromClipboard()
-                                if (!clip.isNullOrBlank()) {
-                                    coordsText = clip
-                                    errorMsg = null
-                                }
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.ContentPaste,
-                                contentDescription = "Paste from clipboard",
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("perm_coords_input")
-                )
-                if (errorMsg != null) {
-                    Text(
-                        text = errorMsg!!,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-                if (existing != null) {
-                    TextButton(
-                        onClick = onClearPermanent,
-                        modifier = Modifier.align(Alignment.Start)
-                    ) {
-                        Text(
-                            text = "Remove Permanent Base",
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { errorMsg = onSave(labelText, coordsText) },
-                enabled = coordsText.isNotBlank(),
-                modifier = Modifier.testTag("perm_save_button")
-            ) {
-                Text("Save Base")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
-
-@Composable
-private fun EditCoordinateDialog(
-    title: String,
-    initialLabel: String,
-    initialCoords: String,
-    onDismiss: () -> Unit,
-    onSave: (String, String) -> String?
-) {
-    var labelText by remember(initialLabel) { mutableStateOf(initialLabel) }
-    var coordsText by remember(initialCoords) { mutableStateOf(initialCoords) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = labelText,
-                    onValueChange = {
-                        labelText = it.take(32)
-                        errorMsg = null
-                    },
-                    label = { Text("Label") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("rename_input_field")
-                )
-                OutlinedTextField(
-                    value = coordsText,
-                    onValueChange = {
-                        coordsText = it
-                        errorMsg = null
-                    },
-                    label = { Text("Coordinates (lat, lng)") },
-                    textStyle = MonoStyles.coordinate,
-                    singleLine = true,
-                    isError = errorMsg != null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("edit_coords_input_field")
-                )
-                if (errorMsg != null) {
-                    Text(
-                        text = errorMsg!!,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    errorMsg = onSave(labelText, coordsText)
-                },
-                enabled = labelText.isNotBlank() && coordsText.isNotBlank(),
-                modifier = Modifier.testTag("rename_save_button")
-            ) {
-                Text("Save")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LastActionBottomSheet(
-    elapsedSeconds: Int,
-    onDismiss: () -> Unit,
-    onSelectMinutesAgo: (Int?) -> Unit
-) {
-    val palette = LocalCooldownPalette.current
-    val presets = listOf(
-        0 to "Just now (0m waited)",
-        5 to "5 minutes ago",
-        15 to "15 minutes ago",
-        30 to "30 minutes ago",
-        45 to "45 minutes ago",
-        60 to "1 hour ago",
-        90 to "1h 30m ago",
-        120 to "2+ hours ago (All Ready)"
-    )
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-        ) {
-            Text(
-                text = "Time Since Last Action",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "Already waited since your last interaction? We subtract elapsed time from every coordinate's cooldown automatically.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(14.dp))
-
-            presets.chunked(2).forEach { rowItems ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    rowItems.forEach { (mins, label) ->
-                        val isSelected = (mins == 0 && elapsedSeconds == 0) ||
-                            (mins > 0 && kotlin.math.abs(elapsedSeconds / 60 - mins) <= 1)
-                        Surface(
-                            onClick = { onSelectMinutesAgo(if (mins == 0) null else mins) },
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (isSelected) palette.fastContainer else MaterialTheme.colorScheme.surfaceVariant,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSelected) palette.fast else palette.hairline
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .minimumInteractiveComponentSize()
-                        ) {
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                ),
-                                color = if (isSelected) palette.fast else MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)
-                            )
-                        }
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }

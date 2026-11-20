@@ -3,8 +3,10 @@ package com.example
 import com.example.data.CoordPoint
 import com.example.domain.CooldownCalculator
 import com.example.domain.CoordinateParser
+import com.example.domain.PlaceNameResolver
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -58,5 +60,12 @@ class ExampleUnitTest {
         assertNotNull(summary)
         assertTrue(summary!!.optimalTotalCooldownSeconds < summary.currentTotalCooldownSeconds)
         assertEquals("Yokohama", summary.optimalOrderPoints[1].label)
+    }
+
+    @Test
+    fun offlinePlaceResolverNamesMajorCitiesAndSkipsOpenOcean() {
+        assertEquals("Tokyo, JP", PlaceNameResolver.lookupOfflineCity(35.6895, 139.6917))
+        assertEquals("New York, US", PlaceNameResolver.lookupOfflineCity(40.7128, -74.0060))
+        assertNull(PlaceNameResolver.lookupOfflineCity(0.0, -160.0))
     }
 }

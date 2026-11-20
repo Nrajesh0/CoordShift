@@ -11,26 +11,48 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.Crossfade
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarData
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -45,7 +67,10 @@ import com.example.ui.screens.CompareScreen
 import com.example.ui.screens.RouteRadarScreen
 import com.example.ui.screens.TimerScreen
 import com.example.ui.theme.CoordShiftTheme
+import com.example.ui.theme.LocalCooldownPalette
 import com.example.viewmodel.CoordShiftViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -79,6 +104,7 @@ fun CoordShiftApp(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var autoDismissJob = remember { arrayOf<Job?>(null) }
 
     val isDark = when (uiState.themeMode) {
         ThemeMode.DARK -> true
@@ -92,12 +118,18 @@ fun CoordShiftApp(
     }
 
     fun showMessage(message: String, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
+        autoDismissJob[0]?.cancel()
         scope.launch {
             snackbarHostState.currentSnackbarData?.dismiss()
+            val dismissDelayMs = if (actionLabel != null) 2800L else 1500L
+            autoDismissJob[0] = launch {
+                delay(dismissDelayMs)
+                snackbarHostState.currentSnackbarData?.dismiss()
+            }
             val result = snackbarHostState.showSnackbar(
                 message = message,
                 actionLabel = actionLabel,
-                duration = SnackbarDuration.Short
+                duration = SnackbarDuration.Indefinite
             )
             if (result == SnackbarResult.ActionPerformed) {
                 onAction?.invoke()
@@ -109,8 +141,8 @@ fun CoordShiftApp(
         if (waitSec > 0) {
             val waitStr = CooldownCalculator.formatCooldown(waitSec)
             showMessage(
-                message = "Comparing from ${promoted.label} ($waitStr wait)",
-                actionLabel = "Start Timer",
+                message = "Comparing from ${promoted.label}",
+                actionLabel = "Start $waitStr",
                 onAction = {
                     viewModel.startTimer(
                         durationSeconds = waitSec,
@@ -119,8 +151,6 @@ fun CoordShiftApp(
                     )
                 }
             )
-        } else {
-            showMessage("Comparing from ${promoted.label}")
         }
     }
 
@@ -128,7 +158,7 @@ fun CoordShiftApp(
         val hadPermanent = uiState.permanentCoord != null
         viewModel.clearTempsAndResetToPermanent()
         showMessage(
-            message = if (hadPermanent) "Cleared temps · Reset to Permanent Base" else "Cleared temporary coordinates",
+            message = if (hadPermanent) "Reset to Home" else "Cleared temporary spots",
             actionLabel = "Undo",
             onAction = { viewModel.undoClearTemps() }
         )
@@ -136,18 +166,14 @@ fun CoordShiftApp(
 
     fun handleSwitchToPermanent(triggerTimer: Boolean) {
         val outcome = viewModel.switchAnchorToPermanent(triggerTimer = triggerTimer)
-        if (outcome != null) {
-            if (triggerTimer && outcome.jumpCooldownSeconds > 0) {
-                showMessage(
-                    message = "Jumped Home · ${
-                        CooldownCalculator.formatCooldown(outcome.jumpCooldownSeconds)
-                    } timer started",
-                    actionLabel = "Timer",
-                    onAction = { viewModel.selectTab(AppTab.TIMER) }
-                )
-            } else {
-                showMessage("Switched to Permanent Base (comparing vs Last location)")
-            }
+        if (outcome != null && triggerTimer && outcome.jumpCooldownSeconds > 0) {
+            showMessage(
+                message = "Back Home · ${
+                    CooldownCalculator.formatCooldown(outcome.jumpCooldownSeconds)
+                } timer",
+                actionLabel = "Timer",
+                onAction = { viewModel.selectTab(AppTab.TIMER) }
+            )
         }
     }
 
@@ -171,7 +197,11 @@ fun CoordShiftApp(
                 modifier = Modifier.fillMaxSize(),
                 containerColor = MaterialTheme.colorScheme.background,
                 contentWindowInsets = WindowInsets.statusBars,
-                snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+                snackbarHost = {
+                    SnackbarHost(hostState = snackbarHostState) { data ->
+                        SwipeableMinimalToast(data = data)
+                    }
+                },
                 bottomBar = {
                     if (!useNavigationRail) {
                         CoordShiftFooterBar(
@@ -217,16 +247,12 @@ fun CoordShiftApp(
                                     val outcome = viewModel.jumpToCoordinate(id)
                                     if (outcome != null) {
                                         val jumpText = if (outcome.jumpCooldownSeconds > 0) {
-                                            "${CooldownCalculator.formatCooldown(outcome.jumpCooldownSeconds)} timer started"
+                                            "Wait ${CooldownCalculator.formatCooldown(outcome.jumpCooldownSeconds)}"
                                         } else {
                                             "Ready now"
                                         }
-                                        val permReturnText = outcome.returnToPermanentSeconds
-                                            ?.takeIf { it > 0 }
-                                            ?.let { " · Perm return ${CooldownCalculator.formatCooldown(it)}" }
-                                            .orEmpty()
                                         showMessage(
-                                            message = "Jumped → ${outcome.destination.label} ($jumpText$permReturnText)",
+                                            message = "Jumped to ${outcome.destination.label} · $jumpText",
                                             actionLabel = if (outcome.jumpCooldownSeconds > 0) "Timer" else null,
                                             onAction = { viewModel.selectTab(AppTab.TIMER) }
                                         )
@@ -235,7 +261,7 @@ fun CoordShiftApp(
                                 onPinAsPermanent = { id ->
                                     val pinned = viewModel.pinAsPermanent(id)
                                     if (pinned != null) {
-                                        showMessage("Pinned ${pinned.label} as Permanent Base")
+                                        showMessage("Saved ${pinned.label} as Home")
                                     }
                                 },
                                 onSetPermanentFromRaw = viewModel::setPermanentFromRaw,
@@ -247,14 +273,13 @@ fun CoordShiftApp(
                                 onClearTempsResetToPermanent = { handleClearTemps() },
                                 onClearLastLocation = {
                                     viewModel.clearLastLocationReference()
-                                    showMessage("Cleared Last Location reference")
                                 },
                                 onSortFastest = viewModel::sortCandidatesByFastest,
                                 onUpdateCoordinate = viewModel::updateCoordinate,
                                 onDeleteCoordinate = { id ->
                                     viewModel.deleteCoordinate(id)
                                     showMessage(
-                                        message = "Coordinate removed",
+                                        message = "Removed",
                                         actionLabel = "Undo",
                                         onAction = { viewModel.undoDelete() }
                                     )
@@ -264,7 +289,7 @@ fun CoordShiftApp(
                                     if (summary.isNotBlank()) {
                                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                                         cm?.setPrimaryClip(ClipData.newPlainText("CoordShift Summary", summary))
-                                        showMessage("Copied comparison summary")
+                                        showMessage("Copied summary")
                                     }
                                 },
                                 onDragPromotedToCurrent = { promoted, waitSec ->
@@ -272,7 +297,7 @@ fun CoordShiftApp(
                                 },
                                 onLoadDemoTrio = viewModel::loadDemoTrio,
                                 onToggleUnit = viewModel::toggleDistanceUnit,
-                                onCycleBuffer = viewModel::cycleSafetyBuffer,
+                                onSetSafetyBuffer = viewModel::setSafetyBuffer,
                                 onSetLastActionMinutesAgo = viewModel::setLastActionMinutesAgo,
                                 onOpenTimerTab = { viewModel.selectTab(AppTab.TIMER) },
                                 onToggleTimerPauseResume = viewModel::toggleTimerPauseResume,
@@ -283,7 +308,7 @@ fun CoordShiftApp(
                                 uiState = uiState,
                                 onApplyOptimalOrder = {
                                     viewModel.applyOptimalRouteOrder()
-                                    showMessage("Reordered list to optimal low-cooldown path")
+                                    showMessage("Reordered to fastest path")
                                 },
                                 onPromoteCoordinate = { id ->
                                     if (id == uiState.permanentCoord?.id) {
@@ -296,11 +321,6 @@ fun CoordShiftApp(
                                     handleSwitchToPermanent(triggerTimer)
                                 },
                                 onSwitchToTemp = { handleSwitchToTemp(null) },
-                                onClearTempsResetToPermanent = { handleClearTemps() },
-                                onClearLastLocation = {
-                                    viewModel.clearLastLocationReference()
-                                    showMessage("Cleared Last Location reference")
-                                },
                                 onGoToCompare = { viewModel.selectTab(AppTab.COMPARE) }
                             )
 
@@ -326,6 +346,85 @@ fun CoordShiftApp(
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableMinimalToast(data: SnackbarData) {
+    val palette = LocalCooldownPalette.current
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value != SwipeToDismissBoxValue.Settled) {
+                data.dismiss()
+                true
+            } else {
+                false
+            }
+        }
+    )
+
+    LaunchedEffect(data) {
+        dismissState.snapTo(SwipeToDismissBoxValue.Settled)
+    }
+
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = true,
+        enableDismissFromEndToStart = true,
+        backgroundContent = {},
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Surface(
+            onClick = { data.dismiss() },
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            border = BorderStroke(1.dp, palette.hairline),
+            shadowElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = data.visuals.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                data.visuals.actionLabel?.let { label ->
+                    TextButton(
+                        onClick = { data.performAction() }
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = { data.dismiss() },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Dismiss notification",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
             }
         }

@@ -15,6 +15,7 @@ import com.example.data.ThemeMode
 import com.example.data.TimerState
 import com.example.domain.CooldownCalculator
 import com.example.domain.CoordinateParser
+import com.example.domain.PlaceNameResolver
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -118,10 +119,14 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                     abs(it.longitude - item.longitude) < 1e-5
             }
             if (!exists) {
-                val label = item.suggestedLabel ?: nextAvailableLabel(currentCoords)
+                val id = UUID.randomUUID().toString()
+                val offlineGuess = if (item.suggestedLabel == null) {
+                    PlaceNameResolver.lookupOfflineCity(item.latitude, item.longitude)
+                } else null
+                val label = item.suggestedLabel ?: offlineGuess ?: nextAvailableLabel(currentCoords)
                 currentCoords.add(
                     CoordPoint(
-                        id = UUID.randomUUID().toString(),
+                        id = id,
                         latitude = item.latitude,
                         longitude = item.longitude,
                         label = label
@@ -160,7 +165,16 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
     fun setPermanentFromRaw(label: String, rawCoords: String): String? {
         val parsed = CoordinateParser.parseAll(rawCoords).firstOrNull()
             ?: return "Invalid coordinates. Use format: 35.6762, 139.6503"
-        val cleanLabel = label.trim().take(32).ifEmpty { parsed.suggestedLabel ?: "Permanent Base" }
+        val userTypedCustom = label.trim().isNotEmpty() && !label.trim().equals("Home Base", ignoreCase = true)
+        val offlineGuess = if (!userTypedCustom) {
+            PlaceNameResolver.lookupOfflineCity(parsed.latitude, parsed.longitude)
+        } else null
+        val cleanLabel = when {
+            userTypedCustom -> label.trim().take(32)
+            parsed.suggestedLabel != null -> parsed.suggestedLabel.take(32)
+            offlineGuess != null -> offlineGuess
+            else -> "Home Base"
+        }
 
         val state = _uiState.value
         val existingPerm = state.permanentCoord
