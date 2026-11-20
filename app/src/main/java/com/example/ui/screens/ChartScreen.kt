@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -57,6 +59,7 @@ fun ChartScreen(
     onSetSafetyBuffer: (Int) -> Unit,
     onSetThemeMode: (ThemeMode) -> Unit,
     onStartTimerFromChart: (Int, String) -> Unit,
+    onOpenNotificationCenter: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalCooldownPalette.current
@@ -335,6 +338,58 @@ fun ChartScreen(
                             selected = uiState.themeMode,
                             onSelect = onSetThemeMode
                         )
+
+                        HorizontalDivider(thickness = 1.dp, color = palette.hairline.copy(alpha = 0.6f))
+
+                        Surface(
+                            onClick = onOpenNotificationCenter,
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = BorderStroke(1.dp, palette.hairline),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("chart_open_notifications_button")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Notifications,
+                                        contentDescription = null,
+                                        tint = if (uiState.notificationPrefs.masterEnabled) {
+                                            palette.fast
+                                        } else {
+                                            palette.mutedText
+                                        },
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = "Notification Center",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = uiState.notificationPrefs.activeAlertSummary,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = "Open Notification Center",
+                                    tint = palette.mutedText,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }

@@ -143,6 +143,8 @@ data class CoordShiftUiState(
     val lastActionEpochMillis: Long? = null,
     val nowEpochMillis: Long = System.currentTimeMillis(),
     val timerState: TimerState = TimerState(),
+    val notificationPrefs: NotificationPreferences = NotificationPreferences(),
+    val notificationLog: List<NotificationLogEntry> = emptyList(),
     val inputText: String = "",
     val inputError: String? = null,
     val lastDeletedCoord: Pair<Int, CoordPoint>? = null,

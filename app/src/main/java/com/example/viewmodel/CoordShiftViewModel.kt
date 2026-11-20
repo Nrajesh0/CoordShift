@@ -11,15 +11,19 @@ import com.example.data.CooldownTier
 import com.example.data.DistanceUnit
 import com.example.data.EvaluatedCoord
 import com.example.data.JumpOutcome
+import com.example.data.NotificationLogEntry
+import com.example.data.NotificationPreferences
 import com.example.data.ThemeMode
 import com.example.data.TimerState
 import com.example.domain.CooldownCalculator
 import com.example.domain.CoordinateParser
 import com.example.domain.PlaceNameResolver
+import com.example.notifications.CooldownNotificationManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -33,7 +37,12 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
     private val _uiState = MutableStateFlow(CoordShiftUiState())
     val uiState: StateFlow<CoordShiftUiState> = _uiState.asStateFlow()
 
+    private var lastPreAlertTargetEpoch: Long = 0L
+    private var lastReadyAlertTargetEpoch: Long = 0L
+
     init {
+        CooldownNotificationManager.ensureChannels(application.applicationContext)
+
         viewModelScope.launch {
             val session = repository.sessionFlow.first()
             val now = System.currentTimeMillis()
@@ -55,35 +64,104 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                         safetyBufferMinutes = session.safetyBufferMinutes,
                         lastActionEpochMillis = session.lastActionEpochMillis,
                         timerState = sanitizedTimer,
+                        notificationPrefs = session.notificationPrefs,
                         nowEpochMillis = now
                     )
                 )
             }
+            syncNotificationsForCurrentState()
+
+            // Observe timer updates triggered from notification shade quick actions (Pause / +1m / Stop)
+            repository.sessionFlow.drop(1).collect { updatedSession ->
+                val currentTimer = _uiState.value.timerState
+                if (updatedSession.timerState != currentTimer) {
+                    _uiState.update { current ->
+                        current.copy(
+                            timerState = updatedSession.timerState,
+                            nowEpochMillis = System.currentTimeMillis()
+                        )
+                    }
+                }
+            }
         }
 
-        // 1-second live clock ticker for countdown timer & elapsed-time remaining wait updates
+        // 1-second live clock ticker for countdown timer, pre-alert & completion delivery
         viewModelScope.launch {
             while (true) {
                 delay(1000L)
                 val now = System.currentTimeMillis()
+                var preAlertToFire: Pair<String, Int>? = null
+                var readyAlertToFire: Triple<String, NotificationPreferences, String?>? = null
+
                 _uiState.update { current ->
-                    val updatedTimer = if (current.timerState.isRunning &&
-                        current.timerState.remainingSeconds(now) <= 0
-                    ) {
-                        val finished = current.timerState.copy(
+                    val timer = current.timerState
+                    val np = current.notificationPrefs
+                    val remaining = timer.remainingSeconds(now)
+
+                    if (timer.isRunning && remaining > 0 && np.masterEnabled && np.preAlertMinutes > 0) {
+                        val preSec = np.preAlertMinutes * 60
+                        if (remaining <= preSec &&
+                            timer.totalDurationSeconds > preSec + 10 &&
+                            lastPreAlertTargetEpoch != timer.targetEndEpochMillis
+                        ) {
+                            lastPreAlertTargetEpoch = timer.targetEndEpochMillis
+                            preAlertToFire = timer.label to np.preAlertMinutes
+                        }
+                    }
+
+                    val updatedTimer = if (timer.isRunning && remaining <= 0) {
+                        val finished = timer.copy(
                             isRunning = false,
                             pausedRemainingSeconds = 0
                         )
+                        if (lastReadyAlertTargetEpoch != timer.targetEndEpochMillis) {
+                            lastReadyAlertTargetEpoch = timer.targetEndEpochMillis
+                            readyAlertToFire = Triple(
+                                timer.label,
+                                np,
+                                buildReturnHomeSummary(current)
+                            )
+                        }
                         viewModelScope.launch { repository.saveTimerState(finished) }
                         finished
                     } else {
-                        current.timerState
+                        timer
                     }
+
                     recomputeState(
                         current.copy(
                             nowEpochMillis = now,
                             timerState = updatedTimer
                         )
+                    )
+                }
+
+                preAlertToFire?.let { (label, mins) ->
+                    val prefs = _uiState.value.notificationPrefs
+                    CooldownNotificationManager.firePreAlertNotification(
+                        context = getApplication(),
+                        label = label,
+                        minutesLeft = mins,
+                        prefs = prefs
+                    )
+                    appendNotificationLog(
+                        title = "${mins}m left · ${label.ifBlank { "Cooldown" }}",
+                        body = "Early heads-up alert triggered",
+                        isPreAlert = true
+                    )
+                }
+
+                readyAlertToFire?.let { (label, prefs, returnSummary) ->
+                    CooldownNotificationManager.fireReadyAlertNotification(
+                        context = getApplication(),
+                        label = label,
+                        prefs = prefs,
+                        returnHomeSummary = returnSummary
+                    )
+                    appendNotificationLog(
+                        title = "Ready · ${label.ifBlank { "Cooldown" }}",
+                        body = prefs.customReadyMessage.ifBlank { "Cooldown complete — safe to act now!" },
+                        isPreAlert = false
                     )
                 }
             }
@@ -715,6 +793,8 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             pausedRemainingSeconds = safeSec,
             isRunning = true
         )
+        lastPreAlertTargetEpoch = 0L
+        lastReadyAlertTargetEpoch = 0L
         _uiState.update { current ->
             current.copy(
                 timerState = nextTimer,
@@ -723,6 +803,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
         viewModelScope.launch { repository.saveTimerState(nextTimer) }
+        syncNotificationsForCurrentState()
     }
 
     fun toggleTimerPauseResume() {
@@ -741,6 +822,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         }
         _uiState.update { it.copy(timerState = updated, nowEpochMillis = now) }
         viewModelScope.launch { repository.saveTimerState(updated) }
+        syncNotificationsForCurrentState()
     }
 
     fun adjustTimerSeconds(deltaSeconds: Int) {
@@ -762,12 +844,72 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         }
         _uiState.update { it.copy(timerState = updated, nowEpochMillis = now) }
         viewModelScope.launch { repository.saveTimerState(updated) }
+        syncNotificationsForCurrentState()
     }
 
     fun resetTimer() {
         val empty = TimerState()
         _uiState.update { it.copy(timerState = empty) }
         viewModelScope.launch { repository.saveTimerState(empty) }
+        CooldownNotificationManager.cancelAllScheduledAndLive(getApplication())
+    }
+
+    fun updateNotificationPreferences(transform: (NotificationPreferences) -> NotificationPreferences) {
+        val updated = transform(_uiState.value.notificationPrefs)
+        _uiState.update { it.copy(notificationPrefs = updated) }
+        viewModelScope.launch { repository.saveNotificationPreferences(updated) }
+        syncNotificationsForCurrentState()
+    }
+
+    fun sendTestNotification(): Boolean {
+        val prefs = _uiState.value.notificationPrefs
+        val sent = CooldownNotificationManager.sendTestNotification(getApplication(), prefs)
+        if (sent) {
+            appendNotificationLog(
+                title = "Test Alert Sent",
+                body = "${prefs.alertStyle.label} · ${prefs.customReadyMessage}",
+                isPreAlert = false
+            )
+        }
+        return sent
+    }
+
+    fun clearNotificationLog() {
+        _uiState.update { it.copy(notificationLog = emptyList()) }
+    }
+
+    fun syncNotificationsForCurrentState() {
+        val state = _uiState.value
+        CooldownNotificationManager.syncTimerNotifications(
+            context = getApplication(),
+            timer = state.timerState,
+            prefs = state.notificationPrefs,
+            returnHomeSummary = buildReturnHomeSummary(state)
+        )
+    }
+
+    private fun buildReturnHomeSummary(state: CoordShiftUiState): String? {
+        val ret = state.returnToPermanentInfo ?: return null
+        val homeName = state.permanentCoord?.label ?: "Home"
+        val wait = if (ret.remainingCooldownSeconds == 0) {
+            "Ready"
+        } else {
+            CooldownCalculator.formatCooldown(ret.remainingCooldownSeconds)
+        }
+        return "Back to $homeName: $wait"
+    }
+
+    private fun appendNotificationLog(title: String, body: String, isPreAlert: Boolean) {
+        val entry = NotificationLogEntry(
+            id = UUID.randomUUID().toString(),
+            title = title,
+            body = body,
+            timestampMillis = System.currentTimeMillis(),
+            isPreAlert = isPreAlert
+        )
+        _uiState.update { current ->
+            current.copy(notificationLog = (listOf(entry) + current.notificationLog).take(15))
+        }
     }
 
     private fun nextAvailableLabel(existing: List<CoordPoint>): String {

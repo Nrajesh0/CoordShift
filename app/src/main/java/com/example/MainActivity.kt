@@ -47,8 +47,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -64,6 +66,7 @@ import com.example.ui.components.CoordShiftFooterBar
 import com.example.ui.components.CoordShiftNavigationRail
 import com.example.ui.screens.ChartScreen
 import com.example.ui.screens.CompareScreen
+import com.example.ui.screens.NotificationCenterScreen
 import com.example.ui.screens.RouteRadarScreen
 import com.example.ui.screens.TimerScreen
 import com.example.ui.theme.CoordShiftTheme
@@ -104,7 +107,8 @@ fun CoordShiftApp(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    var autoDismissJob = remember { arrayOf<Job?>(null) }
+    val autoDismissJob = remember { arrayOf<Job?>(null) }
+    var showNotificationCenter by remember { mutableStateOf(false) }
 
     val isDark = when (uiState.themeMode) {
         ThemeMode.DARK -> true
@@ -184,8 +188,11 @@ fun CoordShiftApp(
         }
     }
 
-    // Back press on secondary tabs returns cleanly to Compare home tab
-    BackHandler(enabled = uiState.selectedTab != AppTab.COMPARE) {
+    // Back press closes Notification Center first, or returns from secondary tabs to Compare home tab
+    BackHandler(enabled = showNotificationCenter) {
+        showNotificationCenter = false
+    }
+    BackHandler(enabled = !showNotificationCenter && uiState.selectedTab != AppTab.COMPARE) {
         viewModel.selectTab(AppTab.COMPARE)
     }
 
@@ -203,7 +210,7 @@ fun CoordShiftApp(
                     }
                 },
                 bottomBar = {
-                    if (!useNavigationRail) {
+                    if (!useNavigationRail && !showNotificationCenter) {
                         CoordShiftFooterBar(
                             selectedTab = uiState.selectedTab,
                             isTimerRunning = uiState.timerState.isRunning,
@@ -217,13 +224,26 @@ fun CoordShiftApp(
                         .fillMaxSize()
                         .padding(innerPadding)
                 ) {
-                    if (useNavigationRail) {
+                    if (useNavigationRail && !showNotificationCenter) {
                         CoordShiftNavigationRail(
                             selectedTab = uiState.selectedTab,
                             isTimerRunning = uiState.timerState.isRunning,
                             onSelectTab = viewModel::selectTab
                         )
                     }
+
+                    if (showNotificationCenter) {
+                        NotificationCenterScreen(
+                            uiState = uiState,
+                            onBack = { showNotificationCenter = false },
+                            onUpdatePrefs = viewModel::updateNotificationPreferences,
+                            onSendTestAlert = viewModel::sendTestNotification,
+                            onClearLog = viewModel::clearNotificationLog,
+                            onPermissionGranted = viewModel::syncNotificationsForCurrentState,
+                            onShowMessage = { msg -> showMessage(msg) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
 
                     Crossfade(
                         targetState = uiState.selectedTab,
@@ -300,6 +320,7 @@ fun CoordShiftApp(
                                 onSetSafetyBuffer = viewModel::setSafetyBuffer,
                                 onSetLastActionMinutesAgo = viewModel::setLastActionMinutesAgo,
                                 onOpenTimerTab = { viewModel.selectTab(AppTab.TIMER) },
+                                onOpenNotificationCenter = { showNotificationCenter = true },
                                 onToggleTimerPauseResume = viewModel::toggleTimerPauseResume,
                                 onShowMessage = { msg -> showMessage(msg) }
                             )
@@ -331,7 +352,8 @@ fun CoordShiftApp(
                                 },
                                 onTogglePauseResume = viewModel::toggleTimerPauseResume,
                                 onAdjustTimerSeconds = viewModel::adjustTimerSeconds,
-                                onResetTimer = viewModel::resetTimer
+                                onResetTimer = viewModel::resetTimer,
+                                onOpenNotificationCenter = { showNotificationCenter = true }
                             )
 
                             AppTab.CHART -> ChartScreen(
@@ -342,9 +364,11 @@ fun CoordShiftApp(
                                 onStartTimerFromChart = { sec, label ->
                                     viewModel.startTimer(sec, label, switchToTimerTab = true)
                                     showMessage("Started timer for $label")
-                                }
+                                },
+                                onOpenNotificationCenter = { showNotificationCenter = true }
                             )
                         }
+                    }
                     }
                 }
             }

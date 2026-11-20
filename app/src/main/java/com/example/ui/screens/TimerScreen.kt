@@ -21,6 +21,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -71,6 +73,7 @@ fun TimerScreen(
     onTogglePauseResume: () -> Unit,
     onAdjustTimerSeconds: (Int) -> Unit,
     onResetTimer: () -> Unit,
+    onOpenNotificationCenter: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalCooldownPalette.current
@@ -121,17 +124,53 @@ fun TimerScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item(key = "timer_header") {
-                Column {
-                    Text(
-                        text = "Cooldown Timer",
-                        style = MaterialTheme.typography.headlineLarge,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        text = "Track safe jump window with exact ready-at clock",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Cooldown Timer",
+                            style = MaterialTheme.typography.headlineLarge,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Text(
+                            text = "Track safe jump window with exact ready-at clock",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    val armed = uiState.notificationPrefs.masterEnabled
+                    Surface(
+                        onClick = onOpenNotificationCenter,
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (armed) palette.fastContainer else MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(
+                            1.dp,
+                            if (armed) palette.fast.copy(alpha = 0.45f) else palette.hairline
+                        ),
+                        modifier = Modifier.testTag("timer_open_notifications_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (armed) Icons.Filled.Notifications else Icons.Filled.NotificationsOff,
+                                contentDescription = "Open Notification Center",
+                                tint = if (armed) palette.fast else palette.mutedText,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = uiState.notificationPrefs.activeAlertSummary,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (armed) palette.fast else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
 

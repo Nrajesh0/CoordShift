@@ -3,8 +3,11 @@ package com.example
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.NotificationAlertStyle
+import com.example.data.VibrationPattern
 import com.example.viewmodel.CoordShiftViewModel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -65,5 +68,31 @@ class ExampleRobolectricTest {
     assertEquals(1, vm.uiState.value.coordinates.size)
     assertEquals("Home Tokyo", vm.uiState.value.currentAnchor?.label)
     assertNull(vm.uiState.value.lastLocationCoord)
+  }
+
+  @Test
+  fun `notification center preferences customize alerts and master mute cleanly`() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val vm = CoordShiftViewModel(app)
+
+    vm.updateNotificationPreferences {
+      it.copy(
+        preAlertMinutes = 5,
+        alertStyle = NotificationAlertStyle.VIBRATE_ONLY,
+        vibrationPattern = VibrationPattern.URGENT,
+        customReadyMessage = "Safe to jump!"
+      )
+    }
+
+    val updated = vm.uiState.value.notificationPrefs
+    assertEquals(5, updated.preAlertMinutes)
+    assertEquals(NotificationAlertStyle.VIBRATE_ONLY, updated.alertStyle)
+    assertEquals(VibrationPattern.URGENT, updated.vibrationPattern)
+    assertEquals("Safe to jump!", updated.customReadyMessage)
+    assertEquals("5m early · Ready", updated.activeAlertSummary)
+
+    vm.updateNotificationPreferences { it.copy(masterEnabled = false) }
+    assertFalse(vm.uiState.value.notificationPrefs.masterEnabled)
+    assertEquals("Muted", vm.uiState.value.notificationPrefs.activeAlertSummary)
   }
 }

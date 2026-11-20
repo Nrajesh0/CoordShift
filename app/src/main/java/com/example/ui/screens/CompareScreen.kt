@@ -52,6 +52,8 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
@@ -140,6 +142,7 @@ fun CompareScreen(
     onSetSafetyBuffer: (Int) -> Unit,
     onSetLastActionMinutesAgo: (Int?) -> Unit,
     onOpenTimerTab: () -> Unit,
+    onOpenNotificationCenter: () -> Unit,
     onToggleTimerPauseResume: () -> Unit,
     onShowMessage: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -278,6 +281,7 @@ fun CompareScreen(
                 HomeTopBar(
                     hasTempsOrLast = uiState.tempCount > 0 || uiState.lastLocationCoord != null,
                     hasActiveModifiers = uiState.elapsedSinceLastActionSeconds > 0 || uiState.safetyBufferMinutes > 0,
+                    notificationsArmed = uiState.notificationPrefs.masterEnabled,
                     modifierBadge = buildString {
                         if (uiState.elapsedSinceLastActionSeconds > 0) {
                             append("-${uiState.elapsedSinceLastActionSeconds / 60}m")
@@ -292,6 +296,7 @@ fun CompareScreen(
                         expandedCardId = null
                         onClearTempsResetToPermanent()
                     },
+                    onOpenNotifications = onOpenNotificationCenter,
                     onOpenOptions = { showOptionsSheet = true }
                 )
             }
@@ -649,8 +654,10 @@ fun CompareScreen(
 private fun HomeTopBar(
     hasTempsOrLast: Boolean,
     hasActiveModifiers: Boolean,
+    notificationsArmed: Boolean,
     modifierBadge: String,
     onReset: () -> Unit,
+    onOpenNotifications: () -> Unit,
     onOpenOptions: () -> Unit
 ) {
     val palette = LocalCooldownPalette.current
@@ -678,7 +685,7 @@ private fun HomeTopBar(
                     modifier = Modifier.testTag("reset_to_permanent_button")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -687,11 +694,39 @@ private fun HomeTopBar(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(16.dp)
                         )
-                        Spacer(modifier = Modifier.width(5.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "Clear",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                onClick = onOpenNotifications,
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, palette.hairline),
+                modifier = Modifier.testTag("open_notifications_button")
+            ) {
+                Box(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.TopEnd
+                ) {
+                    Icon(
+                        imageVector = if (notificationsArmed) Icons.Filled.Notifications else Icons.Filled.NotificationsOff,
+                        contentDescription = "Notification Center",
+                        tint = if (notificationsArmed) MaterialTheme.colorScheme.onSurface else palette.mutedText,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    if (notificationsArmed) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(palette.fast)
                         )
                     }
                 }
@@ -716,7 +751,7 @@ private fun HomeTopBar(
                 modifier = Modifier.testTag("compare_options_button")
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(

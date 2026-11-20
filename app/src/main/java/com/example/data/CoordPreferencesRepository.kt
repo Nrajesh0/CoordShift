@@ -23,12 +23,13 @@ data class PersistedSession(
     val themeMode: ThemeMode,
     val safetyBufferMinutes: Int,
     val lastActionEpochMillis: Long?,
-    val timerState: TimerState
+    val timerState: TimerState,
+    val notificationPrefs: NotificationPreferences
 )
 
 /**
- * Persists ONLY the user's Permanent Base coordinate, preferences, and active countdown timer.
- * Temporary comparison coordinates live cleanly in-memory for the session without polluting history.
+ * Persists the user's Permanent Base coordinate, preferences, notification settings,
+ * and active countdown timer. Temporary comparison coordinates stay cleanly in-memory.
  */
 class CoordPreferencesRepository(private val context: Context) {
 
@@ -43,6 +44,18 @@ class CoordPreferencesRepository(private val context: Context) {
         val TIMER_TARGET_EPOCH = longPreferencesKey("timer_target_epoch")
         val TIMER_PAUSED_SEC = intPreferencesKey("timer_paused_sec")
         val TIMER_RUNNING = booleanPreferencesKey("timer_running")
+
+        // Notification Center preferences
+        val NOTIF_MASTER_ENABLED = booleanPreferencesKey("notif_master_enabled")
+        val NOTIF_LIVE_COUNTDOWN = booleanPreferencesKey("notif_live_countdown")
+        val NOTIF_SHOW_READY_CLOCK = booleanPreferencesKey("notif_show_ready_clock")
+        val NOTIF_SHOW_RETURN_HOME = booleanPreferencesKey("notif_show_return_home")
+        val NOTIF_READY_ALERT = booleanPreferencesKey("notif_ready_alert")
+        val NOTIF_PRE_ALERT_MIN = intPreferencesKey("notif_pre_alert_min")
+        val NOTIF_ALERT_STYLE = stringPreferencesKey("notif_alert_style")
+        val NOTIF_VIBRATION_PATTERN = stringPreferencesKey("notif_vibration_pattern")
+        val NOTIF_SHOW_LOCKSCREEN = booleanPreferencesKey("notif_show_lockscreen")
+        val NOTIF_CUSTOM_MESSAGE = stringPreferencesKey("notif_custom_message")
     }
 
     val sessionFlow: Flow<PersistedSession> = context.coordShiftDataStore.data.map { prefs ->
@@ -62,13 +75,37 @@ class CoordPreferencesRepository(private val context: Context) {
             pausedRemainingSeconds = prefs[Keys.TIMER_PAUSED_SEC] ?: 0,
             isRunning = prefs[Keys.TIMER_RUNNING] ?: false
         )
+        val alertStyle = runCatching {
+            NotificationAlertStyle.valueOf(
+                prefs[Keys.NOTIF_ALERT_STYLE] ?: NotificationAlertStyle.SOUND_VIBRATE.name
+            )
+        }.getOrDefault(NotificationAlertStyle.SOUND_VIBRATE)
+        val vibPattern = runCatching {
+            VibrationPattern.valueOf(
+                prefs[Keys.NOTIF_VIBRATION_PATTERN] ?: VibrationPattern.DOUBLE.name
+            )
+        }.getOrDefault(VibrationPattern.DOUBLE)
+        val notifPrefs = NotificationPreferences(
+            masterEnabled = prefs[Keys.NOTIF_MASTER_ENABLED] ?: true,
+            liveCountdownEnabled = prefs[Keys.NOTIF_LIVE_COUNTDOWN] ?: true,
+            showReadyClock = prefs[Keys.NOTIF_SHOW_READY_CLOCK] ?: true,
+            showReturnHomeInfo = prefs[Keys.NOTIF_SHOW_RETURN_HOME] ?: true,
+            readyAlertEnabled = prefs[Keys.NOTIF_READY_ALERT] ?: true,
+            preAlertMinutes = (prefs[Keys.NOTIF_PRE_ALERT_MIN] ?: 2).coerceIn(0, 15),
+            alertStyle = alertStyle,
+            vibrationPattern = vibPattern,
+            showOnLockScreen = prefs[Keys.NOTIF_SHOW_LOCKSCREEN] ?: true,
+            customReadyMessage = prefs[Keys.NOTIF_CUSTOM_MESSAGE]
+                ?: "Cooldown complete — safe to act now!"
+        )
         PersistedSession(
             permanentCoord = permanent,
             distanceUnit = unit,
             themeMode = theme,
             safetyBufferMinutes = buffer,
             lastActionEpochMillis = lastAction,
-            timerState = timer
+            timerState = timer,
+            notificationPrefs = notifPrefs
         )
     }
 
@@ -117,6 +154,21 @@ class CoordPreferencesRepository(private val context: Context) {
             prefs[Keys.TIMER_TARGET_EPOCH] = timer.targetEndEpochMillis
             prefs[Keys.TIMER_PAUSED_SEC] = timer.pausedRemainingSeconds
             prefs[Keys.TIMER_RUNNING] = timer.isRunning
+        }
+    }
+
+    suspend fun saveNotificationPreferences(np: NotificationPreferences) {
+        context.coordShiftDataStore.edit { prefs ->
+            prefs[Keys.NOTIF_MASTER_ENABLED] = np.masterEnabled
+            prefs[Keys.NOTIF_LIVE_COUNTDOWN] = np.liveCountdownEnabled
+            prefs[Keys.NOTIF_SHOW_READY_CLOCK] = np.showReadyClock
+            prefs[Keys.NOTIF_SHOW_RETURN_HOME] = np.showReturnHomeInfo
+            prefs[Keys.NOTIF_READY_ALERT] = np.readyAlertEnabled
+            prefs[Keys.NOTIF_PRE_ALERT_MIN] = np.preAlertMinutes.coerceIn(0, 15)
+            prefs[Keys.NOTIF_ALERT_STYLE] = np.alertStyle.name
+            prefs[Keys.NOTIF_VIBRATION_PATTERN] = np.vibrationPattern.name
+            prefs[Keys.NOTIF_SHOW_LOCKSCREEN] = np.showOnLockScreen
+            prefs[Keys.NOTIF_CUSTOM_MESSAGE] = np.customReadyMessage.take(80)
         }
     }
 
