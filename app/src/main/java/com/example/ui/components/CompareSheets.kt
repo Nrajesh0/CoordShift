@@ -91,11 +91,25 @@ fun CompareOptionsSheet(
 
             // 1. Time since last action
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "TIME SINCE LAST ACTION",
-                    style = MonoStyles.badge,
-                    color = palette.mutedText
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "TIME SINCE LAST ACTION",
+                        style = MonoStyles.badge,
+                        color = palette.mutedText
+                    )
+                    if (elapsedSeconds > 0) {
+                        val elapsedMins = (elapsedSeconds / 60).coerceAtLeast(1)
+                        Text(
+                            text = "Subtracting ${elapsedMins}m",
+                            style = MonoStyles.badge,
+                            color = palette.fast
+                        )
+                    }
+                }
                 Text(
                     text = "Already waited? Subtracts elapsed time from every cooldown.",
                     style = MaterialTheme.typography.bodySmall,

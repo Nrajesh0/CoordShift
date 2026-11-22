@@ -170,7 +170,12 @@ fun CoordShiftApp(
     }
 
     fun announcePreviewSwitch(promoted: CoordPoint, waitSec: Int) {
-        if (waitSec > 0) {
+        val activeRemaining = if (uiState.timerState.isActive) {
+            uiState.timerState.remainingSeconds(System.currentTimeMillis())
+        } else {
+            0
+        }
+        if (waitSec > activeRemaining && waitSec > 0) {
             val waitStr = CooldownCalculator.formatCooldown(waitSec)
             showMessage(
                 message = "Comparing from ${promoted.label}",
@@ -187,10 +192,9 @@ fun CoordShiftApp(
     }
 
     fun handleClearTemps() {
-        val hadPermanent = uiState.permanentCoord != null
-        viewModel.clearTempsAndResetToPermanent()
+        val msg = viewModel.clearTempsAndResetToPermanent() ?: return
         showMessage(
-            message = if (hadPermanent) "Reset to Home" else "Cleared temporary spots",
+            message = msg,
             actionLabel = "Undo",
             onAction = { viewModel.undoClearTemps() }
         )
@@ -353,6 +357,7 @@ fun CoordShiftApp(
                                 onToggleUnit = viewModel::toggleDistanceUnit,
                                 onSetSafetyBuffer = viewModel::setSafetyBuffer,
                                 onSetLastActionMinutesAgo = viewModel::setLastActionMinutesAgo,
+                                onResetModifiers = viewModel::resetComparisonModifiers,
                                 onOpenTimerTab = { viewModel.selectTab(AppTab.TIMER) },
                                 onOpenNotificationCenter = { showNotificationCenter = true },
                                 onToggleTimerPauseResume = viewModel::toggleTimerPauseResume,

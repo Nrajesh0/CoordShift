@@ -208,7 +208,7 @@ fun TimerScreen(
                                         color = palette.fast
                                     )
                                     Text(
-                                        text = "${timer.label.ifBlank { "Timer" }} is safe to jump now.",
+                                        text = "${timer.label.ifBlank { "Spot" }} is safe to act now.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
@@ -295,14 +295,14 @@ fun TimerScreen(
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = if (timer.isActive && remaining > 0) {
-                                        "Ready at ${
+                                    text = when {
+                                        timer.isActive && remaining > 0 -> "Ready at ${
                                             CooldownCalculator.formatReadyTime(
                                                 uiState.nowEpochMillis + remaining * 1000L
                                             )
                                         }"
-                                    } else {
-                                        "Safe to jump"
+                                        timer.isFinished -> "Safe to act now"
+                                        else -> "No active cooldown"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (remaining == 0) palette.fast else MaterialTheme.colorScheme.onSurfaceVariant
@@ -381,13 +381,17 @@ fun TimerScreen(
                                     modifier = Modifier.size(20.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
+                                val best = uiState.bestCandidate
                                 Text(
                                     text = when {
                                         timer.isRunning -> "Pause"
                                         timer.isActive -> "Resume"
-                                        else -> "Start"
+                                        best != null && best.remainingCooldownSeconds > 0 ->
+                                            "Start ${CooldownCalculator.formatCooldown(best.remainingCooldownSeconds)}"
+                                        else -> "Start 10m"
                                     },
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
 
@@ -452,7 +456,11 @@ fun TimerScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = eval.point.label,
+                                                text = if (eval.isPermanent) {
+                                                    "${eval.point.label} (Home)"
+                                                } else {
+                                                    eval.point.label
+                                                },
                                                 style = MaterialTheme.typography.titleSmall,
                                                 color = MaterialTheme.colorScheme.onSurface,
                                                 maxLines = 1,

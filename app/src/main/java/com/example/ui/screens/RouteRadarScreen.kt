@@ -210,9 +210,11 @@ fun RouteRadarScreen(
                             ) {
                                 RouteStatTile(
                                     title = "CURRENT ORDER",
-                                    cooldownText = CooldownCalculator.formatCooldown(
-                                        route.currentTotalCooldownSeconds
-                                    ),
+                                    cooldownText = if (route.currentTotalCooldownSeconds == 0) {
+                                        "Ready"
+                                    } else {
+                                        CooldownCalculator.formatCooldown(route.currentTotalCooldownSeconds)
+                                    },
                                     distanceText = CooldownCalculator.formatDistance(
                                         route.currentTotalDistanceKm,
                                         uiState.distanceUnit
@@ -222,9 +224,11 @@ fun RouteRadarScreen(
                                 )
                                 RouteStatTile(
                                     title = "OPTIMAL HOP",
-                                    cooldownText = CooldownCalculator.formatCooldown(
-                                        route.optimalTotalCooldownSeconds
-                                    ),
+                                    cooldownText = if (route.optimalTotalCooldownSeconds == 0) {
+                                        "Ready"
+                                    } else {
+                                        CooldownCalculator.formatCooldown(route.optimalTotalCooldownSeconds)
+                                    },
                                     distanceText = CooldownCalculator.formatDistance(
                                         route.optimalTotalDistanceKm,
                                         uiState.distanceUnit
@@ -690,7 +694,11 @@ private fun RouteLegRow(
             }
             Spacer(modifier = Modifier.width(8.dp))
             StatusPillBadge(
-                text = CooldownCalculator.formatCooldown(leg.cooldownSeconds),
+                text = if (leg.cooldownSeconds == 0) {
+                    "Ready"
+                } else {
+                    CooldownCalculator.formatCooldown(leg.cooldownSeconds)
+                },
                 accentColor = accent,
                 containerColor = palette.containerFor(leg.tier),
                 showDot = false

@@ -40,6 +40,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
@@ -59,7 +60,6 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.RestartAlt
-import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
@@ -142,6 +142,7 @@ fun CompareScreen(
     onToggleUnit: () -> Unit,
     onSetSafetyBuffer: (Int) -> Unit,
     onSetLastActionMinutesAgo: (Int?) -> Unit,
+    onResetModifiers: () -> Unit,
     onOpenTimerTab: () -> Unit,
     onOpenNotificationCenter: () -> Unit,
     onToggleTimerPauseResume: () -> Unit,
@@ -280,8 +281,15 @@ fun CompareScreen(
         ) {
             // 1. Clean 1-Row App Header
             item(key = "home_header") {
+                val extraTempCandidates = uiState.coordinates.drop(1)
+                    .count { it.id != uiState.permanentCoord?.id }
+                val canClear = if (uiState.isCurrentPermanent) {
+                    uiState.tempCount > 0 || uiState.lastLocationCoord != null
+                } else {
+                    extraTempCandidates > 0 || (!uiState.timerState.isActive && uiState.permanentCoord != null)
+                }
                 HomeTopBar(
-                    hasTempsOrLast = uiState.tempCount > 0 || uiState.lastLocationCoord != null,
+                    hasTempsOrLast = canClear,
                     hasActiveModifiers = uiState.elapsedSinceLastActionSeconds > 0 || uiState.safetyBufferMinutes > 0,
                     notificationsArmed = uiState.notificationPrefs.masterEnabled,
                     modifierBadge = buildString {
@@ -301,6 +309,64 @@ fun CompareScreen(
                     onOpenNotifications = onOpenNotificationCenter,
                     onOpenOptions = { showOptionsSheet = true }
                 )
+            }
+
+            // Active Cooldown Modifiers Banner (always visible when an elapsed offset or safety buffer is active)
+            if (uiState.elapsedSinceLastActionSeconds > 0 || uiState.safetyBufferMinutes > 0) {
+                item(key = "active_modifiers_banner") {
+                    val parts = buildList {
+                        if (uiState.elapsedSinceLastActionSeconds > 0) {
+                            val mins = (uiState.elapsedSinceLastActionSeconds / 60).coerceAtLeast(1)
+                            add("Already waited ${mins}m")
+                        }
+                        if (uiState.safetyBufferMinutes > 0) {
+                            add("+${uiState.safetyBufferMinutes}m safety buffer")
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("active_modifiers_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = parts.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.secondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Surface(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onResetModifiers()
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                border = BorderStroke(1.dp, palette.hairline),
+                                modifier = Modifier.testTag("reset_modifiers_button")
+                            ) {
+                                Text(
+                                    text = "Reset",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // 2. Empty State OR Unified Hero "NOW" Card + Quick Paste + Ranked Spot List
@@ -343,7 +409,9 @@ fun CompareScreen(
                 }
             } else {
                 val anchorEval = uiState.evaluatedCoords.first()
-                val candidates = uiState.evaluatedCoords.drop(1)
+                // Hide Permanent Home from Compare Next when it is already shown in HeroNowCard's Return Home footer
+                val hideHomeInList = uiState.returnToPermanentInfo != null
+                val candidates = uiState.evaluatedCoords.drop(1).filterNot { hideHomeInList && it.isPermanent }
 
                 // Hero Focus Card: Combines Mode Switcher + Where You Are + Active Timer + Home Return
                 item(key = anchorEval.point.id) {
@@ -525,7 +593,7 @@ fun CompareScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Filled.Sort,
+                                            imageVector = Icons.AutoMirrored.Filled.Sort,
                                             contentDescription = "Sort by shortest wait",
                                             tint = MaterialTheme.colorScheme.secondary,
                                             modifier = Modifier.size(14.dp)
@@ -1034,7 +1102,10 @@ private fun HeroNowCard(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
                                 Icon(
                                     imageVector = Icons.Filled.Timer,
                                     contentDescription = null,
@@ -1042,11 +1113,19 @@ private fun HeroNowCard(
                                     modifier = Modifier.size(19.dp)
                                 )
                                 Spacer(modifier = Modifier.width(9.dp))
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    val timerSpot = timer.label.trim().uppercase()
                                     Text(
-                                        text = if (timer.isRunning) "WAIT BEFORE ACTING" else "COOLDOWN PAUSED",
+                                        text = when {
+                                            timer.isRunning && timerSpot.isNotEmpty() -> "WAITING · $timerSpot"
+                                            timer.isRunning -> "WAIT BEFORE ACTING"
+                                            timerSpot.isNotEmpty() -> "PAUSED · $timerSpot"
+                                            else -> "COOLDOWN PAUSED"
+                                        },
                                         style = MonoStyles.badge,
-                                        color = tAccent
+                                        color = tAccent,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = "Ready at ${
@@ -1059,6 +1138,7 @@ private fun HeroNowCard(
                                     )
                                 }
                             }
+                            Spacer(modifier = Modifier.width(8.dp))
 
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
@@ -1165,7 +1245,11 @@ private fun HeroNowCard(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onSwitchToPermanent)
+                            .padding(vertical = 2.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Home,

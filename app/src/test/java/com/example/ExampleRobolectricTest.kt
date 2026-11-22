@@ -216,4 +216,57 @@ class ExampleRobolectricTest {
     assertTrue(restartedVm.uiState.value.timerState.isRunning)
     assertEquals("Yokohama", restartedVm.uiState.value.timerState.label)
   }
+
+  @Test
+  fun `clear on jumped temp spot clears only extra candidates and protects active cooldown spot`() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val vm = CoordShiftViewModel(app)
+
+    assertNull(vm.setPermanentFromRaw("Home Tokyo", "35.68950, 139.69170"))
+    assertEquals(2, vm.addFromRawText("Yokohama: 35.44370, 139.63800\nOsaka: 34.69370, 135.50230"))
+
+    val yokohamaId = vm.uiState.value.coordinates.first { it.label == "Yokohama" }.id
+    assertNotNull(vm.jumpToCoordinate(yokohamaId))
+    assertEquals("Yokohama", vm.uiState.value.currentAnchor?.label)
+    // Jumping from Home to Temp must never self-reference destination as lastLocationCoord
+    assertNull(vm.uiState.value.lastLocationCoord)
+    assertTrue(vm.uiState.value.timerState.isRunning)
+
+    // First Clear removes only unselected extra temp candidate (Osaka), keeping jumped spot + Home + timer
+    val firstClearMsg = vm.clearTempsAndResetToPermanent()
+    assertEquals("Cleared 1 extra spot", firstClearMsg)
+    assertEquals("Yokohama", vm.uiState.value.currentAnchor?.label)
+    assertEquals(2, vm.uiState.value.coordinates.size)
+    assertTrue(vm.uiState.value.timerState.isRunning)
+
+    // Second Clear while cooldown timer is active must NOT delete the active jumped spot
+    val secondClearMsg = vm.clearTempsAndResetToPermanent()
+    assertNull(secondClearMsg)
+    assertEquals("Yokohama", vm.uiState.value.currentAnchor?.label)
+    assertTrue(vm.uiState.value.timerState.isRunning)
+  }
+
+  @Test
+  fun `new pasted coordinate appears at top of compare next and setting Home deduplicates`() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val vm = CoordShiftViewModel(app)
+
+    assertNull(vm.setPermanentFromRaw("Home Tokyo", "35.68950, 139.69170"))
+    assertEquals(1, vm.addFromRawText("Yokohama: 35.44370, 139.63800"))
+    assertEquals(1, vm.addFromRawText("Osaka: 34.69370, 135.50230"))
+
+    // Most recently pasted spot sits at index 1 (immediately below Current Anchor)
+    assertEquals("Home Tokyo", vm.uiState.value.coordinates[0].label)
+    assertEquals("Osaka", vm.uiState.value.coordinates[1].label)
+    assertEquals("Yokohama", vm.uiState.value.coordinates[2].label)
+
+    // Pasting duplicate mentions existing spot name
+    assertEquals(0, vm.addFromRawText("35.44370, 139.63800"))
+    assertEquals("Already in list as Yokohama", vm.uiState.value.inputError)
+
+    // Setting Home to an existing coordinate deduplicates cleanly
+    assertNull(vm.setPermanentFromRaw("New Base", "35.44370, 139.63800"))
+    assertEquals(2, vm.uiState.value.coordinates.size)
+    assertEquals("New Base", vm.uiState.value.permanentCoord?.label)
+  }
 }

@@ -83,7 +83,18 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 }
             }
             val restoredLast = session.lastLocationCoord?.takeIf { last ->
-                restoredCoords.any { it.id == last.id } && last.id != session.permanentCoord?.id
+                val anchorId = restoredCoords.firstOrNull()?.id
+                restoredCoords.any { it.id == last.id } &&
+                    last.id != session.permanentCoord?.id &&
+                    last.id != anchorId
+            }
+            // Expire stale "time since last action" offsets older than 3 hours so old sessions
+            // never permanently lock every coordinate to "Ready (0m)".
+            val freshLastAction = session.lastActionEpochMillis?.takeIf { epoch ->
+                (now - epoch) in 0L..(3 * 60 * 60 * 1000L)
+            }
+            if (session.lastActionEpochMillis != null && freshLastAction == null) {
+                viewModelScope.launch { repository.saveLastActionEpoch(null) }
             }
             _uiState.update { current ->
                 val hasInMemoryWorkspace = current.coordinates.isNotEmpty() || current.permanentCoord != null
@@ -96,7 +107,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                         distanceUnit = session.distanceUnit,
                         themeMode = session.themeMode,
                         safetyBufferMinutes = session.safetyBufferMinutes,
-                        lastActionEpochMillis = current.lastActionEpochMillis ?: session.lastActionEpochMillis,
+                        lastActionEpochMillis = current.lastActionEpochMillis ?: freshLastAction,
                         timerState = if (hasInMemoryTimer) current.timerState else sanitizedTimer,
                         notificationPrefs = session.notificationPrefs,
                         notificationLog = if (current.notificationLog.isNotEmpty()) {
@@ -252,19 +263,21 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val currentCoords = _uiState.value.coordinates.toMutableList()
-        var addedCount = 0
+        val hadAnchor = currentCoords.isNotEmpty()
+        val newlyAdded = mutableListOf<CoordPoint>()
+        var firstDuplicateLabel: String? = null
         for (item in parsed) {
-            val exists = currentCoords.any {
+            val existingMatch = (currentCoords + newlyAdded).firstOrNull {
                 abs(it.latitude - item.latitude) < 1e-5 &&
                     abs(it.longitude - item.longitude) < 1e-5
             }
-            if (!exists) {
+            if (existingMatch == null) {
                 val id = UUID.randomUUID().toString()
                 val offlineGuess = if (item.suggestedLabel == null) {
                     PlaceNameResolver.lookupOfflineCity(item.latitude, item.longitude)
                 } else null
-                val label = item.suggestedLabel ?: offlineGuess ?: nextAvailableLabel(currentCoords)
-                currentCoords.add(
+                val label = item.suggestedLabel ?: offlineGuess ?: nextAvailableLabel(currentCoords + newlyAdded)
+                newlyAdded.add(
                     CoordPoint(
                         id = id,
                         latitude = item.latitude,
@@ -272,18 +285,31 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                         label = label
                     )
                 )
-                addedCount++
+            } else if (firstDuplicateLabel == null) {
+                firstDuplicateLabel = existingMatch.label
             }
         }
 
-        if (addedCount == 0) {
+        if (newlyAdded.isEmpty()) {
             _uiState.update {
                 it.copy(
-                    inputError = "Coordinate already in your list",
+                    inputError = if (firstDuplicateLabel != null) {
+                        "Already in list as $firstDuplicateLabel"
+                    } else {
+                        "Coordinate already in your list"
+                    },
                     inputText = if (clearInputOnSuccess) "" else it.inputText
                 )
             }
             return 0
+        }
+
+        // Insert newly pasted candidates right at the top of Compare Next (index 1) so users
+        // see fresh wait times immediately without scrolling down.
+        if (hadAnchor) {
+            currentCoords.addAll(1, newlyAdded)
+        } else {
+            currentCoords.addAll(newlyAdded)
         }
 
         _uiState.update { current ->
@@ -296,12 +322,13 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
         persistWorkspace()
-        return addedCount
+        return newlyAdded.size
     }
 
     /**
      * Sets or updates the single Permanent Base coordinate from raw text + optional label.
-     * Saved persistently in DataStore and kept in the active comparison list.
+     * Saved persistently in DataStore and kept in the active comparison list without duplicating
+     * matching coordinates or yanking the user away from an active cooldown spot.
      */
     fun setPermanentFromRaw(label: String, rawCoords: String): String? {
         val parsed = CoordinateParser.parseAll(rawCoords).firstOrNull()
@@ -319,19 +346,45 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
 
         val state = _uiState.value
         val existingPerm = state.permanentCoord
+        val updatedList = state.coordinates.toMutableList()
+
+        // If the entered coordinates already exist as a Temp spot, promote that spot instead of duplicating it.
+        val matchingOtherIdx = updatedList.indexOfFirst { pt ->
+            pt.id != existingPerm?.id &&
+                abs(pt.latitude - parsed.latitude) < 1e-5 &&
+                abs(pt.longitude - parsed.longitude) < 1e-5
+        }
+        val reusedId = existingPerm?.id ?: updatedList.getOrNull(matchingOtherIdx)?.id ?: UUID.randomUUID().toString()
         val newPerm = CoordPoint(
-            id = existingPerm?.id ?: UUID.randomUUID().toString(),
+            id = reusedId,
             latitude = parsed.latitude,
             longitude = parsed.longitude,
             label = cleanLabel
         )
 
-        val updatedList = state.coordinates.toMutableList()
         val existingIdx = updatedList.indexOfFirst { it.id == newPerm.id }
         if (existingIdx >= 0) {
             updatedList[existingIdx] = newPerm
-        } else {
+        } else if (updatedList.isEmpty() || !state.timerState.isActive) {
             updatedList.add(0, newPerm)
+        } else {
+            // Preserve active jumped spot at index 0 while a cooldown timer is running.
+            updatedList.add(1, newPerm)
+        }
+
+        // Remove any duplicate temp entry at identical coordinates if we had an existingPerm ID
+        if (existingPerm != null) {
+            updatedList.removeAll { pt ->
+                pt.id != newPerm.id &&
+                    abs(pt.latitude - parsed.latitude) < 1e-5 &&
+                    abs(pt.longitude - parsed.longitude) < 1e-5
+            }
+        }
+
+        val updatedLast = state.lastLocationCoord?.takeIf { last ->
+            last.id != newPerm.id &&
+                last.id != updatedList.firstOrNull()?.id &&
+                updatedList.any { it.id == last.id }
         }
 
         _uiState.update { current ->
@@ -339,12 +392,16 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
                 current.copy(
                     permanentCoord = newPerm,
                     coordinates = updatedList,
+                    lastLocationCoord = updatedLast,
                     inputError = null
                 )
             )
         }
         viewModelScope.launch { repository.savePermanentCoord(newPerm) }
         persistWorkspace()
+        if (_uiState.value.timerState.isActive) {
+            syncNotificationsForCurrentState()
+        }
         return null
     }
 
@@ -470,8 +527,8 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         list.add(0, promoted)
 
         val nextLast = when {
-            prevCurrent != null && prevCurrent.id != permId -> prevCurrent
-            else -> state.lastLocationCoord
+            prevCurrent != null && prevCurrent.id != permId && prevCurrent.id != promoted.id -> prevCurrent
+            else -> state.lastLocationCoord?.takeIf { it.id != promoted.id && it.id != permId }
         }
 
         _uiState.update { current ->
@@ -492,7 +549,7 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
     /**
      * Commits a real "Jump / Switch" to a chosen better coordinate:
      * 1. Sets it as Active Current Anchor (index 0), persists it so it never disappears on app restart,
-     *    and updates `lastLocationCoord`
+     *    and updates `lastLocationCoord` cleanly (never pointing to the new current spot itself)
      * 2. Triggers or preserves the live Cooldown Timer & notifications (never deleting or shortening
      *    a longer already-running cooldown!)
      * 3. Computes and returns the Return-to-Permanent cooldown so you always know how long back to base!
@@ -515,10 +572,10 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         list.add(0, destination)
 
         val permId = state.permanentCoord?.id
-        val nextLast = if (prevCurrent != null && prevCurrent.id != permId) {
+        val nextLast = if (prevCurrent != null && prevCurrent.id != permId && prevCurrent.id != destination.id) {
             prevCurrent
         } else {
-            destination
+            null
         }
 
         val jumpWaitSec = eval.remainingCooldownSeconds
@@ -609,10 +666,9 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
 
         val permId = state.permanentCoord?.id
         val newAnchor = list.firstOrNull()
-        val nextLast = if (newAnchor?.id == permId && prevAnchor != null && prevAnchor.id != permId) {
-            prevAnchor
-        } else {
-            state.lastLocationCoord
+        val nextLast = when {
+            newAnchor?.id == permId && prevAnchor != null && prevAnchor.id != permId -> prevAnchor
+            else -> state.lastLocationCoord?.takeIf { it.id != newAnchor?.id && it.id != permId }
         }
 
         _uiState.update { current ->
@@ -747,16 +803,56 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * Explicit user Clear Temps / Reset to Permanent action:
-     * Wipes all temporary pasted coordinates and resets Active Anchor cleanly to the Permanent Base
-     * (keeping the Permanent Base and any running cooldown notifications intact!).
+     * Smart, safe Clear action:
+     * - If currently on a Temp spot with other unselected Temp candidates: clears ONLY the extra
+     *   unselected Temp candidates so your active jumped spot, Home, and cooldown timer stay intact.
+     * - If currently on a Temp spot with NO extra candidates: never deletes the spot while a cooldown
+     *   timer is active; otherwise resets cleanly back to Permanent Home.
+     * - If currently at Permanent Home: clears all temporary spots and last-location reference.
+     * Returns a short confirmation message, or null if nothing was cleared.
      */
-    fun clearTempsAndResetToPermanent() {
+    fun clearTempsAndResetToPermanent(): String? {
         val state = _uiState.value
-        if (state.tempCount == 0 && state.lastLocationCoord == null) return
-        val snapshot = Triple(state.coordinates, state.lastLocationCoord, state.permanentCoord)
-        val resetList = state.permanentCoord?.let { listOf(it) } ?: emptyList()
+        val perm = state.permanentCoord
+        val anchor = state.currentAnchor
 
+        val resetList: List<CoordPoint>
+        val message: String
+
+        if (!state.isCurrentPermanent && anchor != null) {
+            val extraTemps = state.coordinates.drop(1).filter { it.id != perm?.id }
+            when {
+                extraTemps.isNotEmpty() -> {
+                    resetList = buildList {
+                        add(anchor)
+                        if (perm != null && perm.id != anchor.id) add(perm)
+                    }
+                    message = if (extraTemps.size == 1) {
+                        "Cleared 1 extra spot"
+                    } else {
+                        "Cleared ${extraTemps.size} extra spots"
+                    }
+                }
+                state.timerState.isActive -> {
+                    // Never delete the jumped spot currently waiting on an active cooldown!
+                    return null
+                }
+                perm != null -> {
+                    resetList = listOf(perm)
+                    message = "Reset to ${perm.label}"
+                }
+                else -> {
+                    resetList = emptyList()
+                    message = "Cleared temporary spots"
+                }
+            }
+        } else {
+            if (state.tempCount == 0 && state.lastLocationCoord == null) return null
+            resetList = perm?.let { listOf(it) } ?: emptyList()
+            message = if (perm != null) "Reset to ${perm.label}" else "Cleared temporary spots"
+        }
+
+        val snapshot = Triple(state.coordinates, state.lastLocationCoord, state.permanentCoord)
         _uiState.update { current ->
             recomputeState(
                 current.copy(
@@ -769,6 +865,22 @@ class CoordShiftViewModel(application: Application) : AndroidViewModel(applicati
         persistWorkspace()
         if (_uiState.value.timerState.isActive) {
             syncNotificationsForCurrentState()
+        }
+        return message
+    }
+
+    fun resetComparisonModifiers() {
+        _uiState.update { current ->
+            recomputeState(
+                current.copy(
+                    safetyBufferMinutes = 0,
+                    lastActionEpochMillis = null
+                )
+            )
+        }
+        viewModelScope.launch {
+            repository.saveSafetyBuffer(0)
+            repository.saveLastActionEpoch(null)
         }
     }
 

@@ -19,11 +19,11 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CompareArrows
+import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material.icons.automirrored.outlined.CompareArrows
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.outlined.CompareArrows
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.material.icons.outlined.Timer
@@ -61,8 +61,8 @@ private val navDestinations = listOf(
     NavDestination(
         tab = AppTab.COMPARE,
         labelRes = R.string.nav_compare,
-        selectedIcon = Icons.Filled.CompareArrows,
-        unselectedIcon = Icons.Outlined.CompareArrows
+        selectedIcon = Icons.AutoMirrored.Filled.CompareArrows,
+        unselectedIcon = Icons.AutoMirrored.Outlined.CompareArrows
     ),
     NavDestination(
         tab = AppTab.RADAR,
